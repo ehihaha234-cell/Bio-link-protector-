@@ -1,36 +1,66 @@
-# Bio Link Protector
+# Bio Link Protector — Bot API + MTProto
 
-Fresh Telegram group protection bot.
+This bot uses the Telegram Bot API for moderation and a dedicated MTProto user account for reading Telegram profile bios.
 
-## Current features
+## Protection flow
 
-- Automatic group registration when the bot becomes a member/admin.
-- Owner-only `/start`, `/broadcast`, `/stats`, and `/groups`.
-- Automatic message deletion timer per group (database setting ready).
-- Protection engine with link detection and ban handling when bio data is available.
-- Admin warning after a successful protection action.
-- MongoDB storage.
-- Render Worker deployment.
+1. Add the **bot** to a group and make it an administrator with permission to ban/restrict users and delete messages.
+2. Add the **MTProto user account** to every protected group. The MTProto account is required because the Bot API does not expose arbitrary group members' profile bios.
+3. When a user joins or sends a group message, the MTProto account reads that user's current profile bio.
+4. If the bio contains a Telegram/web link or `@username`, the bot bans the user and sends a warning to the group administrators.
+5. If the bio is clean, nothing is changed.
+6. Auto-delete and owner broadcast/group statistics continue through the Bot API.
 
-## Environment variables
+## MTProto setup
 
-```env
-BOT_TOKEN=
-OWNER_ID=
-MONGO_URI=
-DATABASE_NAME=bio_link_protector
-DEFAULT_DELETE_SECONDS=0
-MAX_DELETE_SECONDS=86400
+Create Telegram API credentials at `my.telegram.org` and get:
+
+- `MT_API_ID`
+- `MT_API_HASH`
+
+Generate the session locally:
+
+```text
+pip install Telethon==1.45.0
+python generate_session.py
 ```
 
-## Telegram permissions
+Enter the MTProto account's phone number, login code and 2FA password if requested. Copy the printed `MT_SESSION` value into Render.
 
-Make the bot an administrator in each protected group with:
-- Ban users
-- Delete messages
+**Use a dedicated Telegram account for the MTProto connection. Never publish the session string.** Anyone who gets it can access that Telegram account.
 
-## Important Bot API limitation
+## Render Free Web Service
 
-A Telegram bot cannot arbitrarily retrieve every group member's profile bio by user ID. This project does not pretend otherwise. Bio is only checked when the Telegram update/context actually exposes the bio. A separate MTProto user-account architecture would be required for broader profile inspection and is intentionally not enabled in this Bot-API-only build.
+Build command:
 
-\n## Render Free Web Service\n\nThis version includes a Flask health server for Render Web Service.\n\nBuild Command:\n```text\npip install -r requirements.txt\n```\n\nStart Command:\n```text\npython bot.py\n```\n\nOnly one polling instance may use the bot token at a time.\n
+```text
+pip install -r requirements.txt
+```
+
+Start command:
+
+```text
+python bot.py
+```
+
+Health endpoint:
+
+```text
+/health
+```
+
+Required environment variables:
+
+```text
+BOT_TOKEN
+OWNER_ID
+MONGO_URI
+DATABASE_NAME
+DEFAULT_DELETE_SECONDS
+MAX_DELETE_SECONDS
+MT_API_ID
+MT_API_HASH
+MT_SESSION
+```
+
+Only one instance may poll with the same `BOT_TOKEN`. If another copy is running, Telegram will return `409 Conflict`.

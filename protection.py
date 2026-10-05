@@ -4,15 +4,18 @@ from dataclasses import dataclass
 from telegram import Bot, Chat, User
 from telegram.error import TelegramError
 
+from mtproto_client import mt
+
 LINK_RE = re.compile(
     r"(?i)(https?://|www\.|t\.me/|telegram\.me/|telegram\.dog/|"
-    r"@[a-z][a-z0-9_]{3,31}\b)"
+    r"tg://|@(?:[a-z][a-z0-9_]{3,31})\b)"
 )
 
 @dataclass
 class ProtectionResult:
     banned: bool
     reason: str = ""
+    bio: str = ""
 
 async def is_admin(bot: Bot, chat_id: int, user_id: int) -> bool:
     try:
@@ -21,42 +24,48 @@ async def is_admin(bot: Bot, chat_id: int, user_id: int) -> bool:
     except TelegramError:
         return False
 
-async def fetch_bio(bot: Bot, user: User):
-    """
-    Bot API limitation: a bot cannot arbitrarily fetch every group member's
-    bio by user ID. Telegram exposes bio in supported contexts such as
-    private-chat Chat data and join-request updates.
-
-    This function therefore returns a bio only when it is actually available
-    on the supplied User object/context. It never invents profile data.
-    """
-    return getattr(user, "bio", None)
-
 def has_prohibited_link(text: str | None) -> bool:
     if not text:
         return False
     return bool(LINK_RE.search(text))
 
-async def process_user(bot: Bot, chat_id: int, user: User) -> ProtectionResult:
-    bio = await fetch_bio(bot, user)
+async def check_and_ban(bot: Bot, chat_id: int, user: User, mt_entity=None) -> ProtectionResult:
+    """Read the user's Telegram bio through the connected MTProto account.
+
+    MTProto is used only for profile/bio lookup. The Bot API remains responsible
+    for moderation, so the bot must have permission to restrict/ban members.
+    """
+    entity = mt_entity
+    if entity is None:
+        entity = await mt.refresh_entity(user.id)
+    if entity is None:
+        return ProtectionResult(False, "Bio lookup unavailable")
+
+    bio = await mt.get_bio(entity)
+    if bio is None:
+        return ProtectionResult(False, "Bio lookup unavailable")
     if not has_prohibited_link(bio):
-        return ProtectionResult(False)
+        return ProtectionResult(False, bio=bio)
 
     try:
         await bot.ban_chat_member(chat_id, user.id)
-        return ProtectionResult(True, "Prohibited link detected in bio")
+        return ProtectionResult(True, "Prohibited link detected in bio", bio=bio)
     except TelegramError as exc:
-        return ProtectionResult(False, f"Ban failed: {exc}")
+        return ProtectionResult(False, f"Ban failed: {exc}", bio=bio)
 
-async def send_admin_warning(bot: Bot, chat: Chat, user: User, reason: str):
+async def send_admin_warning(bot: Bot, chat: Chat, user: User, reason: str, bio: str = ""):
     text = (
         "🚨 Bio Link Protector Warning\n\n"
         f"👤 User: {user.mention_html()}\n"
         f"🆔 User ID: <code>{user.id}</code>\n\n"
-        f"🛡️ Action: User Banned\n"
-        f"🔗 Reason: {reason}\n\n"
-        "Your group is protected by Bio Link Protector."
+        "🛡️ Action: User Banned\n"
+        f"🔗 Reason: {reason}\n"
     )
+    if bio:
+        safe_bio = bio.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        text += f"\n📝 Bio: <code>{safe_bio}</code>\n"
+    text += "\nYour group is protected by Bio Link Protector."
+
     try:
         admins = await bot.get_chat_administrators(chat.id)
         for admin in admins:
@@ -68,7 +77,6 @@ async def send_admin_warning(bot: Bot, chat: Chat, user: User, reason: str):
                     disable_web_page_preview=True
                 )
             except TelegramError:
-                # Admin may have never started the bot; Telegram will reject DM.
                 pass
     except TelegramError:
         pass

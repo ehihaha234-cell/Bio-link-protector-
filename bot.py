@@ -1,26 +1,105 @@
+import asyncio
 import logging
-from threading import Thread
-from health_server import run_health_server
-from datetime import datetime, timezone
+import threading
 
+from health_server import run_health_server
 from telegram import Update
 from telegram.constants import ChatType
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, ChatMemberHandler,
     ContextTypes, filters
 )
+from telegram import Bot
+from telethon import events
 
 from config import BOT_TOKEN, OWNER_ID
 from database import db
-from protection import process_user, is_admin, send_admin_warning
+from protection import check_and_ban, is_admin, send_admin_warning
 from auto_delete import schedule_delete
 from owner import owner_start, owner_broadcast, owner_stats, owner_groups
+from mtproto_client import mt
 
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
+
+
+def _run_mtproto():
+    async def runner():
+        client = await mt.start()
+
+        @client.on(events.NewMessage())
+        async def on_new_message(event):
+            if not event.is_group:
+                return
+            try:
+                sender = await event.get_sender()
+                if not sender or getattr(sender, "bot", False):
+                    return
+                # Full user gives us the current bio/about field.
+                async with Bot(BOT_TOKEN) as bot:
+                    chat_id = int(event.chat_id)
+                    user = await bot.get_chat_member(chat_id, sender.id)
+                    if user.status in ("administrator", "creator"):
+                        return
+                    tg_user = sender
+                    # Build a lightweight Bot API-compatible user object.
+                    from telegram import User
+                    api_user = User(
+                        id=sender.id,
+                        first_name=getattr(sender, "first_name", None) or "User",
+                        last_name=getattr(sender, "last_name", None),
+                        username=getattr(sender, "username", None),
+                        is_bot=bool(getattr(sender, "bot", False)),
+                    )
+                    result = await check_and_ban(bot, chat_id, api_user, sender)
+                    if result.banned:
+                        try:
+                            await bot.delete_message(chat_id, event.id)
+                        except Exception:
+                            pass
+                        try:
+                            chat = await bot.get_chat(chat_id)
+                            await send_admin_warning(bot, chat, api_user, result.reason, result.bio)
+                        except Exception:
+                            pass
+            except Exception:
+                logger.exception("MTProto message protection failed")
+
+        @client.on(events.ChatAction())
+        async def on_chat_action(event):
+            if not event.is_group or not (event.user_joined or event.user_added):
+                return
+            try:
+                sender = await event.get_user()
+                if not sender or getattr(sender, "bot", False):
+                    return
+                async with Bot(BOT_TOKEN) as bot:
+                    chat_id = int(event.chat_id)
+                    member = await bot.get_chat_member(chat_id, sender.id)
+                    if member.status in ("administrator", "creator"):
+                        return
+                    from telegram import User
+                    api_user = User(
+                        id=sender.id,
+                        first_name=getattr(sender, "first_name", None) or "User",
+                        last_name=getattr(sender, "last_name", None),
+                        username=getattr(sender, "username", None),
+                        is_bot=bool(getattr(sender, "bot", False)),
+                    )
+                    result = await check_and_ban(bot, chat_id, api_user, sender)
+                    if result.banned:
+                        chat = await bot.get_chat(chat_id)
+                        await send_admin_warning(bot, chat, api_user, result.reason, result.bio)
+            except Exception:
+                logger.exception("MTProto join protection failed")
+
+        logger.info("MTProto bio protection listener started")
+        await client.run_until_disconnected()
+
+    asyncio.run(runner())
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -43,19 +122,8 @@ async def group_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await db.ensure_group(chat.id, chat.title or str(chat.id), chat.type)
 
-    # Never punish group administrators.
-    if await is_admin(context.bot, chat.id, user.id):
-        return
-
-    result = await process_user(context.bot, chat.id, user)
-    if result.banned:
-        try:
-            await msg.delete()
-        except Exception:
-            pass
-        await send_admin_warning(context.bot, chat, user, result.reason)
-        return
-
+    # MTProto listener performs the actual bio lookup/ban. This handler only
+    # handles message retention and database bookkeeping.
     await schedule_delete(context, msg)
 
 
@@ -63,28 +131,8 @@ async def member_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cm = update.chat_member
     if not cm or not update.effective_chat:
         return
-
     chat = update.effective_chat
     await db.ensure_group(chat.id, chat.title or str(chat.id), chat.type)
-
-    new = cm.new_chat_member
-    old = cm.old_chat_member
-
-    # A user becoming a member from left/kicked/restricted state.
-    became_member = (
-        new.status in ("member", "restricted")
-        and old.status in ("left", "kicked")
-    )
-    if not became_member:
-        return
-
-    user = new.user
-    if await is_admin(context.bot, chat.id, user.id):
-        return
-
-    result = await process_user(context.bot, chat.id, user)
-    if result.banned:
-        await send_admin_warning(context.bot, chat, user, result.reason)
 
 
 async def my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -100,22 +148,26 @@ async def my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def main():
-    Thread(target=run_health_server, daemon=True).start()
     if not BOT_TOKEN:
         raise RuntimeError("BOT_TOKEN is missing")
 
-    app = Application.builder().token(BOT_TOKEN).build()
+    Thread = threading.Thread
+    Thread(target=run_health_server, daemon=True).start()
 
+    # MTProto account is a separate Telegram user account. It must already be
+    # logged in via MT_SESSION and must be a member of protected groups.
+    threading.Thread(target=_run_mtproto, daemon=True, name="mtproto").start()
+
+    app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("broadcast", owner_broadcast))
     app.add_handler(CommandHandler("stats", owner_stats))
     app.add_handler(CommandHandler("groups", owner_groups))
-
     app.add_handler(ChatMemberHandler(member_update, ChatMemberHandler.CHAT_MEMBER))
     app.add_handler(ChatMemberHandler(my_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
     app.add_handler(MessageHandler(filters.ALL & ~filters.StatusUpdate.ALL, group_message))
 
-    logger.info("Bio Link Protector started")
+    logger.info("Bio Link Protector started with Bot API + MTProto")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
