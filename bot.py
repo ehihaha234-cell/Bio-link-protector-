@@ -18,6 +18,7 @@ from protection import check_and_ban, is_admin, send_admin_warning
 from auto_delete import schedule_delete
 from owner import owner_start, owner_broadcast, owner_stats, owner_groups
 from mtproto_client import mt
+from setup_flow import setup_mtproto_for_group
 
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
@@ -148,7 +149,14 @@ async def my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     chat = update.effective_chat
     new_status = cm.new_chat_member.status
-    if new_status in ("administrator", "member"):
+    if new_status == "administrator":
+        await db.ensure_group(chat.id, chat.title or str(chat.id), chat.type)
+        # When the bot becomes an administrator, automatically verify the
+        # required rights, invite the MTProto account, and promote it.
+        await setup_mtproto_for_group(
+            context.bot, chat.id, chat.title or str(chat.id), cm.from_user
+        )
+    elif new_status == "member":
         await db.ensure_group(chat.id, chat.title or str(chat.id), chat.type)
     elif new_status in ("left", "kicked"):
         await db.deactivate_group(chat.id)

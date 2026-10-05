@@ -6,7 +6,8 @@ from typing import Optional
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from telethon.tl.functions.users import GetFullUserRequest
-from telethon.errors import RPCError
+from telethon.tl.functions.messages import ImportChatInviteRequest
+from telethon.errors import RPCError, UserAlreadyParticipantError, InviteHashExpiredError, InviteHashInvalidError
 
 from config import MT_API_ID, MT_API_HASH, MT_SESSION
 
@@ -64,6 +65,35 @@ class MTProtoService:
         except (RPCError, ValueError, TypeError) as exc:
             logger.warning("MTProto bio lookup failed: %s", exc)
             return None
+
+
+    async def join_group_by_invite(self, invite_link: str):
+        """Join a protected group using a bot-generated invite link."""
+        if not self.client or not self.ready:
+            raise RuntimeError("MTProto client is not ready")
+
+        link = (invite_link or "").strip()
+        if not link:
+            raise ValueError("Empty invite link")
+
+        # Bot-generated private invite links are normally https://t.me/+HASH.
+        # Also accept the legacy /joinchat/HASH form.
+        if "+" in link:
+            invite_hash = link.split("+", 1)[1].split("?", 1)[0].strip("/")
+        elif "/joinchat/" in link:
+            invite_hash = link.split("/joinchat/", 1)[1].split("?", 1)[0].strip("/")
+        else:
+            raise ValueError("Unsupported invite link format")
+
+        try:
+            await self.client(ImportChatInviteRequest(invite_hash))
+            logger.info("MTProto account joined group using invite link")
+        except UserAlreadyParticipantError:
+            logger.info("MTProto account is already a member of the group")
+        except (InviteHashExpiredError, InviteHashInvalidError) as exc:
+            logger.warning("MTProto invite link is invalid/expired: %s", exc)
+            raise
+        return True
 
     async def refresh_entity(self, entity):
         if not self.client:
