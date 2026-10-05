@@ -39,10 +39,28 @@ class MTProtoService:
 
     async def get_bio(self, user_entity) -> Optional[str]:
         if not self.client or not self.ready:
+            logger.warning("MTProto bio lookup skipped: client not ready")
             return None
         try:
             full = await self.client(GetFullUserRequest(user_entity))
-            return getattr(full.full_user, "about", None) or ""
+            about = getattr(full.full_user, "about", None) or ""
+
+            # Telegram can store a clickable URL as an entity even when the
+            # visible bio text does not contain the URL. Include those URLs
+            # in the text checked by the protector.
+            entities = getattr(full.full_user, "about_entities", None) or []
+            hidden_urls = []
+            for ent in entities:
+                url = getattr(ent, "url", None)
+                if url:
+                    hidden_urls.append(str(url))
+
+            combined = about
+            if hidden_urls:
+                combined += " " + " ".join(hidden_urls)
+
+            logger.info("MTProto bio fetched: user=%s bio=%r", getattr(user_entity, "id", "?"), combined)
+            return combined
         except (RPCError, ValueError, TypeError) as exc:
             logger.warning("MTProto bio lookup failed: %s", exc)
             return None

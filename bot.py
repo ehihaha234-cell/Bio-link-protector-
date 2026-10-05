@@ -38,6 +38,9 @@ def _run_mtproto():
                 sender = await event.get_sender()
                 if not sender or getattr(sender, "bot", False):
                     return
+                if not getattr(sender, "id", None):
+                    return
+                logger.info("Bio check: message from user %s in chat %s", sender.id, event.chat_id)
                 # Full user gives us the current bio/about field.
                 async with Bot(BOT_TOKEN) as bot:
                     chat_id = int(event.chat_id)
@@ -55,6 +58,10 @@ def _run_mtproto():
                         is_bot=bool(getattr(sender, "bot", False)),
                     )
                     result = await check_and_ban(bot, chat_id, api_user, sender)
+                    logger.info(
+                        "Bio check result: user=%s chat=%s banned=%s reason=%s bio=%r",
+                        sender.id, chat_id, result.banned, result.reason, result.bio,
+                    )
                     if result.banned:
                         try:
                             await bot.delete_message(chat_id, event.id)
@@ -96,7 +103,7 @@ def _run_mtproto():
             except Exception:
                 logger.exception("MTProto join protection failed")
 
-        logger.info("MTProto bio protection listener started")
+        logger.info("MTProto bio protection listener started; monitoring group messages and joins")
         await client.run_until_disconnected()
 
     asyncio.run(runner())

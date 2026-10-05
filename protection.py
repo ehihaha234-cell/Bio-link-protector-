@@ -6,9 +6,11 @@ from telegram.error import TelegramError
 
 from mtproto_client import mt
 
+# Detect normal URLs, Telegram links/usernames and common bare domains.
 LINK_RE = re.compile(
-    r"(?i)(https?://|www\.|t\.me/|telegram\.me/|telegram\.dog/|"
-    r"tg://|@(?:[a-z][a-z0-9_]{3,31})\b)"
+    r"(?i)(?:https?://|www\.|t\.me/|telegram\.me/|telegram\.dog/|"
+    r"tg://|(?:[a-z0-9-]+\.)+(?:com|net|org|io|me|co|in|ly|gg|cc|tv|xyz)(?:/|\b)|"
+    r"@(?:[a-z][a-z0-9_]{3,31})\b)"
 )
 
 @dataclass
@@ -30,11 +32,7 @@ def has_prohibited_link(text: str | None) -> bool:
     return bool(LINK_RE.search(text))
 
 async def check_and_ban(bot: Bot, chat_id: int, user: User, mt_entity=None) -> ProtectionResult:
-    """Read the user's Telegram bio through the connected MTProto account.
-
-    MTProto is used only for profile/bio lookup. The Bot API remains responsible
-    for moderation, so the bot must have permission to restrict/ban members.
-    """
+    """Read the current Telegram profile bio with the MTProto user account."""
     entity = mt_entity
     if entity is None:
         entity = await mt.refresh_entity(user.id)
@@ -44,6 +42,7 @@ async def check_and_ban(bot: Bot, chat_id: int, user: User, mt_entity=None) -> P
     bio = await mt.get_bio(entity)
     if bio is None:
         return ProtectionResult(False, "Bio lookup unavailable")
+
     if not has_prohibited_link(bio):
         return ProtectionResult(False, bio=bio)
 
