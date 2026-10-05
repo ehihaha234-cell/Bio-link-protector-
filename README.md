@@ -32,3 +32,5 @@ Make the bot an administrator in each protected group with:
 ## Important Bot API limitation
 
 A Telegram bot cannot arbitrarily retrieve every group member's profile bio by user ID. This project does not pretend otherwise. Bio is only checked when the Telegram update/context actually exposes the bio. A separate MTProto user-account architecture would be required for broader profile inspection and is intentionally not enabled in this Bot-API-only build.
+
+\n## Render Free Web Service\n\nThis version includes a Flask health server for Render Web Service.\n\nBuild Command:\n```text\npip install -r requirements.txt\n```\n\nStart Command:\n```text\npython bot.py\n```\n\nOnly one polling instance may use the bot token at a time.\n

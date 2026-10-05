@@ -1,4 +1,6 @@
 import logging
+from threading import Thread
+from health_server import run_health_server
 from datetime import datetime, timezone
 
 from telegram import Update
@@ -98,6 +100,7 @@ async def my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def main():
+    Thread(target=run_health_server, daemon=True).start()
     if not BOT_TOKEN:
         raise RuntimeError("BOT_TOKEN is missing")
 
