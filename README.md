@@ -1,35 +1,34 @@
 # Bio Link Protector
 
-Fresh Telegram protection bot built with Python, python-telegram-bot 22.8 and MongoDB.
+Fresh Telegram group protection bot.
 
-## Features
-- Automatic bio link detection for group members.
-- Ban users whose accessible Telegram bio contains a URL, Telegram link, or @username pattern.
-- Delete the violating message when a violation is detected.
-- Warn the group owner in private chat when a user is banned.
-- Per-group auto-delete timer: `/autodelete <seconds>`; `/autodelete 0` disables it.
-- Owner-only dashboard for statistics, active groups, broadcast and settings help.
-- Broadcast a message to all active groups where the bot is still present.
-- MongoDB persistence.
-- Render worker deployment configuration.
+## Current features
 
-## Setup
-1. Create a bot with @BotFather.
-2. Create a MongoDB database and obtain its connection URI.
-3. Copy `.env.example` to `.env` and fill in the values.
-4. Install dependencies: `pip install -r requirements.txt`
-5. Run: `python bot.py`
-6. Add the bot to a group as administrator with permission to delete messages and ban/restrict members.
+- Automatic group registration when the bot becomes a member/admin.
+- Owner-only `/start`, `/broadcast`, `/stats`, and `/groups`.
+- Automatic message deletion timer per group (database setting ready).
+- Protection engine with link detection and ban handling when bio data is available.
+- Admin warning after a successful protection action.
+- MongoDB storage.
+- Render Worker deployment.
 
-## Auto delete
-An administrator can run:
+## Environment variables
 
-`/autodelete 60`
+```env
+BOT_TOKEN=
+OWNER_ID=
+MONGO_URI=
+DATABASE_NAME=bio_link_protector
+DEFAULT_DELETE_SECONDS=0
+MAX_DELETE_SECONDS=86400
+```
 
-All regular group messages observed by the bot are queued for deletion after 60 seconds. Use `/autodelete 0` to disable.
+## Telegram permissions
 
-## Owner dashboard
-Only `OWNER_ID` receives the owner dashboard from `/start`. Regular users do not get owner controls.
+Make the bot an administrator in each protected group with:
+- Ban users
+- Delete messages
 
-## Bio detection note
-Telegram's Bot API exposes a user's bio through `getChat` for private chats when available. For join requests, Telegram also supplies the request bio. If Telegram does not expose a bio for a particular user, the bot does not falsely ban that user. See Telegram Bot API documentation for current platform limitations.
+## Important Bot API limitation
+
+A Telegram bot cannot arbitrarily retrieve every group member's profile bio by user ID. This project does not pretend otherwise. Bio is only checked when the Telegram update/context actually exposes the bio. A separate MTProto user-account architecture would be required for broader profile inspection and is intentionally not enabled in this Bot-API-only build.

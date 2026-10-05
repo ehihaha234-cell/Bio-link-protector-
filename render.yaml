@@ -11,5 +11,9 @@ services:
         sync: false
       - key: MONGO_URI
         sync: false
-      - key: DB_NAME
+      - key: DATABASE_NAME
         value: bio_link_protector
+      - key: DEFAULT_DELETE_SECONDS
+        value: "0"
+      - key: MAX_DELETE_SECONDS
+        value: "86400"
