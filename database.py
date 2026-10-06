@@ -15,6 +15,7 @@ class Database:
         self.groups = _db["groups"] if _db is not None else None
         self.settings = _db["settings"] if _db is not None else None
         self.users = _db["users"] if _db is not None else None
+        self.warning_counts = _db["warning_counts"] if _db is not None else None
 
     async def _call(self, fn, *args, **kwargs):
         return await asyncio.to_thread(fn, *args, **kwargs)
@@ -27,7 +28,7 @@ class Database:
             self.groups.update_one,
             {"chat_id": chat_id},
             {"$set": {"title": title, "chat_type": chat_type, "active": True, "updated_at": now},
-             "$setOnInsert": {"created_at": now, "delete_seconds": 0, "paused": False}},
+             "$setOnInsert": {"created_at": now, "delete_seconds": 0, "paused": False, "detect_on_join": True, "message_action": "ban", "delete_after_warning": True, "punishment": "mute", "warning_limit": 3}},
             upsert=True,
         )
 
@@ -56,30 +57,6 @@ class Database:
         if self.groups is None:
             return []
         return await self._call(lambda: list(self.groups.find({"active": True}).limit(10000)))
-
-
-    async def get_group_settings(self, chat_id):
-        group = await self.get_group(chat_id)
-        defaults = {
-            "detect_on_join": True,
-            "message_action": "punish",  # punish | warn
-            "delete_after_warning": True,
-            "punishment": "ban",  # ban | mute
-        }
-        if not group:
-            return defaults
-        settings = group.get("protection_settings") or {}
-        return {**defaults, **settings}
-
-    async def set_group_setting(self, chat_id, key, value):
-        if self.groups is None:
-            return
-        await self._call(
-            self.groups.update_one,
-            {"chat_id": int(chat_id)},
-            {"$set": {f"protection_settings.{key}": value}},
-            upsert=True,
-        )
 
     async def set_delete_seconds(self, chat_id, seconds):
         if self.groups is None:
@@ -137,6 +114,49 @@ class Database:
         )
         return True
 
+
+    async def get_protection_settings(self, chat_id):
+        if self.groups is None:
+            return {"detect_on_join": True, "message_action": "ban", "delete_after_warning": True, "punishment": "mute", "warning_limit": 3}
+        doc = await self._call(self.groups.find_one, {"chat_id": int(chat_id)}, {
+            "detect_on_join": 1, "message_action": 1, "delete_after_warning": 1, "punishment": 1, "warning_limit": 1
+        })
+        return {
+            "detect_on_join": bool((doc or {}).get("detect_on_join", True)),
+            "message_action": (doc or {}).get("message_action", "ban"),
+            "delete_after_warning": bool((doc or {}).get("delete_after_warning", True)),
+            "punishment": (doc or {}).get("punishment", "mute"),
+            "warning_limit": max(1, int((doc or {}).get("warning_limit", 3) or 3)),
+        }
+
+    async def update_protection_setting(self, chat_id, key, value):
+        if self.groups is None:
+            return
+        allowed = {"detect_on_join", "message_action", "delete_after_warning", "punishment", "warning_limit"}
+        if key not in allowed:
+            raise ValueError("Invalid protection setting")
+        await self._call(self.groups.update_one, {"chat_id": int(chat_id)}, {"$set": {key: value}}, upsert=True)
+
+    async def increment_warning(self, chat_id, user_id):
+        if self.warning_counts is None:
+            return 1
+        doc = await self._call(
+            self.warning_counts.find_one_and_update,
+            {"chat_id": int(chat_id), "user_id": int(user_id)},
+            {"$inc": {"count": 1}, "$set": {"updated_at": datetime.now(timezone.utc)}},
+            upsert=True, return_document=True,
+        )
+        # PyMongo ReturnDocument enum is not necessary here on older versions;
+        # fetch after update for a deterministic count.
+        latest = await self._call(self.warning_counts.find_one, {"chat_id": int(chat_id), "user_id": int(user_id)})
+        return int((latest or {}).get("count", 1) or 1)
+
+    async def get_warning_count(self, chat_id, user_id):
+        if self.warning_counts is None:
+            return 0
+        doc = await self._call(self.warning_counts.find_one, {"chat_id": int(chat_id), "user_id": int(user_id)})
+        return int((doc or {}).get("count", 0) or 0)
+
     async def count_groups(self):
         if self.groups is None:
             return 0
@@ -170,22 +190,9 @@ class Database:
         await self._call(
             self.users.update_one,
             {"_id": int(user_id)},
-            {"$set": {
-                "last_started_at": datetime.now(timezone.utc),
-                "active": True,
-            }, "$setOnInsert": {"created_at": datetime.now(timezone.utc)}},
+            {"$set": {"last_started_at": datetime.now(timezone.utc)}},
             upsert=True,
         )
-
-    async def active_users(self):
-        if self.users is None:
-            return []
-        return await self._call(lambda: list(self.users.find({"active": {"$ne": False}}, {"_id": 1}).limit(100000)))
-
-    async def deactivate_user(self, user_id):
-        if self.users is None:
-            return
-        await self._call(self.users.update_one, {"_id": int(user_id)}, {"$set": {"active": False}})
 
     async def record_user_banned(self, user_id, chat_id=None):
         if self.settings is None:

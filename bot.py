@@ -14,9 +14,9 @@ from telethon import events
 
 from config import BOT_TOKEN, OWNER_ID
 from database import db
-from protection import check_and_ban, is_admin, send_admin_warning, send_user_warning
+from protection import check_and_ban, is_admin, send_admin_warning
 from auto_delete import schedule_delete
-from owner import owner_start, owner_broadcast, owner_stats, owner_groups, mtproto_menu, mtlogin, mtlogout, mtlogin_message, owner_callback, owner_broadcast_message, user_callback, user_dashboard
+from owner import owner_start, owner_broadcast, owner_stats, owner_groups, mtproto_menu, mtlogin, mtlogout, mtlogin_message, owner_callback, owner_broadcast_message, user_start, user_settings_callback
 from mtproto_client import mt
 from setup_flow import setup_mtproto_for_group
 
@@ -28,55 +28,61 @@ logger = logging.getLogger(__name__)
 
 
 async def mt_message_handler(event):
-    if not event.is_group:return
+    if not event.is_group:
+        return
     try:
-        if await db.is_group_paused(int(event.chat_id)):
+        chat_id = int(event.chat_id)
+        if await db.is_group_paused(chat_id):
             return
-        sender=await event.get_sender()
-        if not sender or getattr(sender,"bot",False):return
-        detector = await mt.get_me()
-        if detector and int(sender.id) == int(detector.id):
+        sender = await event.get_sender()
+        if not sender or getattr(sender, "bot", False):
             return
         async with Bot(BOT_TOKEN) as bot:
             from telegram import User
-            member=await bot.get_chat_member(int(event.chat_id),sender.id)
-            if member.status in ("administrator","creator"):return
-            u=User(id=sender.id,first_name=getattr(sender,"first_name",None) or "User",last_name=getattr(sender,"last_name",None),username=getattr(sender,"username",None),is_bot=False)
-            result=await check_and_ban(bot,int(event.chat_id),u,sender,trigger="message")
-            if result.detected and result.action != "ignored":
-                if result.action == "warn":
-                    await send_user_warning(bot, int(event.chat_id), u, result.bio)
-                    if (await db.get_group_settings(int(event.chat_id))).get("delete_after_warning", True):
-                        try: await bot.delete_message(int(event.chat_id),event.id)
-                        except: pass
-                    try: await send_admin_warning(bot,await bot.get_chat(int(event.chat_id)),u,result.reason,result.bio,"Warning only")
-                    except: pass
-                elif result.action in ("User Banned", "User Muted"):
-                    try: await bot.delete_message(int(event.chat_id),event.id)
-                    except: pass
-                    try: await send_admin_warning(bot,await bot.get_chat(int(event.chat_id)),u,result.reason,result.bio,result.action)
-                    except: pass
-    except Exception:logger.exception("MTProto message protection failed")
+            # Run the Bot API admin check and MTProto bio lookup in parallel.
+            member_task = asyncio.create_task(bot.get_chat_member(chat_id, sender.id))
+            bio_task = asyncio.create_task(mt.get_bio(sender))
+            member, bio = await asyncio.gather(member_task, bio_task)
+            if member.status in ("administrator", "creator"):
+                return
+            u = User(id=sender.id, first_name=getattr(sender, "first_name", None) or "User",
+                     last_name=getattr(sender, "last_name", None), username=getattr(sender, "username", None), is_bot=False)
+            result = await check_and_ban(bot, chat_id, u, sender, message_id=event.id, bio=bio)
+            if result.detected and result.action in ("warning", "mute"):
+                from protection import send_group_warning
+                await send_group_warning(bot, await bot.get_chat(chat_id), u, result)
+    except Exception:
+        logger.exception("MTProto message protection failed")
+
 
 async def mt_chat_action_handler(event):
-    if not event.is_group or not (event.user_joined or event.user_added):return
+    if not event.is_group or not (event.user_joined or event.user_added):
+        return
     try:
-        if await db.is_group_paused(int(event.chat_id)):
+        chat_id = int(event.chat_id)
+        if await db.is_group_paused(chat_id):
             return
-        sender=await event.get_user()
-        if not sender or getattr(sender,"bot",False):return
-        detector = await mt.get_me()
-        if detector and int(sender.id) == int(detector.id):
+        settings = await db.get_protection_settings(chat_id)
+        if not settings.get("detect_on_join", True):
+            return
+        sender = await event.get_user()
+        if not sender or getattr(sender, "bot", False):
             return
         async with Bot(BOT_TOKEN) as bot:
             from telegram import User
-            member=await bot.get_chat_member(int(event.chat_id),sender.id)
-            if member.status in ("administrator","creator"):return
-            u=User(id=sender.id,first_name=getattr(sender,"first_name",None) or "User",last_name=getattr(sender,"last_name",None),username=getattr(sender,"username",None),is_bot=False)
-            result=await check_and_ban(bot,int(event.chat_id),u,sender,trigger="join")
-            if result.detected and result.action in ("User Banned", "User Muted"):
-                await send_admin_warning(bot,await bot.get_chat(int(event.chat_id)),u,result.reason,result.bio,result.action)
-    except Exception:logger.exception("MTProto join protection failed")
+            member_task = asyncio.create_task(bot.get_chat_member(chat_id, sender.id))
+            bio_task = asyncio.create_task(mt.get_bio(sender))
+            member, bio = await asyncio.gather(member_task, bio_task)
+            if member.status in ("administrator", "creator"):
+                return
+            u = User(id=sender.id, first_name=getattr(sender, "first_name", None) or "User",
+                     last_name=getattr(sender, "last_name", None), username=getattr(sender, "username", None), is_bot=False)
+            result = await check_and_ban(bot, chat_id, u, sender, bio=bio)
+            if result.detected and result.action in ("warning", "mute"):
+                from protection import send_group_warning
+                await send_group_warning(bot, await bot.get_chat(chat_id), u, result)
+    except Exception:
+        logger.exception("MTProto join protection failed")
 
 def _run_mtproto():
     async def runner():
@@ -97,13 +103,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await owner_start(update, context)
         return
     await db.record_user_start(user.id)
-    await update.message.reply_text(
-        "🛡️ <b>Bio Link Protector is active.</b>\n\n"
-        "Please add me as an administrator with <b>all administrator permissions</b>.\n\n"
-        "Protection will start automatically once the required permissions are granted.",
-        parse_mode="HTML",
-    )
-    await user_dashboard(update, context)
+    await user_start(update, context)
 
 
 async def group_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -163,7 +163,7 @@ def main():
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(owner_callback, pattern=r"^owner:"))
-    app.add_handler(CallbackQueryHandler(user_callback, pattern=r"^user:"))
+    app.add_handler(CallbackQueryHandler(user_settings_callback, pattern=r"^groupcfg:"))
     app.add_handler(CommandHandler("broadcast", owner_broadcast))
     app.add_handler(CommandHandler("stats", owner_stats))
     app.add_handler(CommandHandler("groups", owner_groups))

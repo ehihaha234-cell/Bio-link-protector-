@@ -1,4 +1,3 @@
-import asyncio
 import logging
 from html import escape
 
@@ -11,114 +10,6 @@ from mtproto_client import mt
 
 logger = logging.getLogger(__name__)
 
-
-async def _user_groups(update, context):
-    user = update.effective_user
-    if not user:
-        return []
-    groups = await db.active_groups()
-    result = []
-    for group in groups:
-        try:
-            member = await context.bot.get_chat_member(int(group["chat_id"]), int(user.id))
-            if member.status in ("administrator", "creator"):
-                result.append(group)
-        except Exception:
-            continue
-    return result
-
-async def user_dashboard(update, context):
-    if not update.effective_user or update.effective_user.id == OWNER_ID:
-        return
-    groups = await _user_groups(update, context)
-    keyboard = []
-    for group in groups[:20]:
-        title = (group.get("title") or str(group.get("chat_id")))[:35]
-        keyboard.append([InlineKeyboardButton(f"👥 {title}", callback_data=f"user:group:{group['chat_id']}")])
-    text = (
-        "🛡️ <b>Bio Link Protector</b>\n\n"
-        "Select your group below to configure bio-link protection settings."
-    )
-    if not groups:
-        text += "\n\n<i>No groups found where you are an administrator.</i>"
-    await update.effective_message.reply_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard) if keyboard else None)
-
-async def _verify_group_admin(query, context, chat_id):
-    try:
-        member = await context.bot.get_chat_member(int(chat_id), int(query.from_user.id))
-        return member.status in ("administrator", "creator")
-    except Exception:
-        return False
-
-def _group_settings_keyboard(chat_id, settings):
-    join = "🟢 ON" if settings.get("detect_on_join", True) else "🔴 OFF"
-    action = "🚫 Punish" if settings.get("message_action", "punish") == "punish" else "⚠️ Warning"
-    delete = "🟢 ON" if settings.get("delete_after_warning", True) else "🔴 OFF"
-    punishment = "🔨 Ban" if settings.get("punishment", "ban") == "ban" else "🔇 Mute"
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton(f"🔎 Detect on Join: {join}", callback_data=f"user:set:{chat_id}:join")],
-        [InlineKeyboardButton(f"💬 Message Action: {action}", callback_data=f"user:set:{chat_id}:message")],
-        [InlineKeyboardButton(f"🗑️ Delete after Warning: {delete}", callback_data=f"user:set:{chat_id}:delete")],
-        [InlineKeyboardButton(f"⚖️ Punishment: {punishment}", callback_data=f"user:set:{chat_id}:punishment")],
-        [InlineKeyboardButton("⬅️ My Groups", callback_data="user:home")],
-    ])
-
-async def _show_group_settings(query, context, chat_id):
-    if not await _verify_group_admin(query, context, chat_id):
-        await query.answer("You must be a group administrator to change settings.", show_alert=True)
-        return
-    group = await db.get_group(int(chat_id))
-    if not group:
-        await query.answer("Group not found.", show_alert=True)
-        return
-    settings = await db.get_group_settings(int(chat_id))
-    title = escape(group.get("title") or str(chat_id))
-    text = (
-        f"⚙️ <b>{title}</b>\n\n"
-        "Configure when the bio is checked and what action is taken.\n\n"
-        f"🔎 Detect on Join: <b>{'ON' if settings.get('detect_on_join', True) else 'OFF'}</b>\n"
-        f"💬 Message Action: <b>{'Punish' if settings.get('message_action') == 'punish' else 'Warning'}</b>\n"
-        f"🗑️ Delete after Warning: <b>{'ON' if settings.get('delete_after_warning', True) else 'OFF'}</b>\n"
-        f"⚖️ Punishment: <b>{'Ban' if settings.get('punishment') == 'ban' else 'Mute'}</b>"
-    )
-    await query.edit_message_text(text, parse_mode="HTML", reply_markup=_group_settings_keyboard(chat_id, settings))
-    await query.answer()
-
-async def user_callback(update, context):
-    query = update.callback_query
-    if not query or query.from_user.id == OWNER_ID:
-        return
-    data = query.data or ""
-    if data == "user:home":
-        await query.answer()
-        groups = await _user_groups(update, context)
-        keyboard = [[InlineKeyboardButton(f"👥 {(g.get('title') or str(g.get('chat_id')))[:35]}", callback_data=f"user:group:{g['chat_id']}")] for g in groups[:20]]
-        text = "🛡️ <b>Bio Link Protector</b>\n\nSelect your group below to configure bio-link protection settings."
-        if not groups:
-            text += "\n\n<i>No groups found where you are an administrator.</i>"
-        await query.edit_message_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard) if keyboard else None)
-        return
-    if data.startswith("user:group:"):
-        chat_id = int(data.rsplit(":",1)[1])
-        await _show_group_settings(query, context, chat_id)
-        return
-    if data.startswith("user:set:"):
-        _, _, chat_id_raw, key = data.split(":")
-        chat_id = int(chat_id_raw)
-        if not await _verify_group_admin(query, context, chat_id):
-            await query.answer("You must be a group administrator.", show_alert=True)
-            return
-        settings = await db.get_group_settings(chat_id)
-        if key == "join":
-            await db.set_group_setting(chat_id, "detect_on_join", not settings.get("detect_on_join", True))
-        elif key == "message":
-            await db.set_group_setting(chat_id, "message_action", "warn" if settings.get("message_action", "punish") == "punish" else "punish")
-        elif key == "delete":
-            await db.set_group_setting(chat_id, "delete_after_warning", not settings.get("delete_after_warning", True))
-        elif key == "punishment":
-            await db.set_group_setting(chat_id, "punishment", "mute" if settings.get("punishment", "ban") == "ban" else "ban")
-        await _show_group_settings(query, context, chat_id)
-        return
 
 def owner_only(update):
     return bool(update.effective_user and update.effective_user.id == OWNER_ID)
@@ -265,47 +156,12 @@ async def owner_broadcast(update, context):
     if not owner_only(update):
         return
     context.user_data["broadcast_mode"] = True
-    context.user_data.pop("broadcast_items", None)
-    context.user_data.pop("broadcast_media_group_id", None)
-    context.user_data.pop("broadcast_collect_task", None)
     await update.effective_message.reply_text(
         "📢 <b>Broadcast</b>\n\n"
-        "Send up to <b>10 media items</b> as one album, or send a text message.\n"
-        "Supported: photo, video, document/file, audio, voice, animation and text.\n"
-        "Captions are preserved. The same broadcast will be sent to <b>all active groups</b> and <b>all users who started the bot</b>.\n\n"
-        "After sending the media/message, you will get a <b>Confirm / Cancel</b> button.\n\n"
+        "Send the message or media you want to broadcast.\n"
+        "Supported: text, photo, video, document/file, audio and voice.\n"
+        "Caption will be included when media has a caption.\n\n"
         "Send <code>/cancel</code> to cancel.", parse_mode="HTML"
-    )
-
-
-async def _finish_broadcast_collection(update, context):
-    """Finalize a media album after Telegram has delivered its messages."""
-    await asyncio.sleep(1.2)
-    if not context.user_data.get("broadcast_mode"):
-        return
-    items = context.user_data.get("broadcast_items") or []
-    if not items:
-        return
-
-    # Keep first 10 messages only. Telegram media groups are max 10.
-    items = items[:10]
-    context.user_data["broadcast_items"] = items
-    context.user_data["broadcast_chat_id"] = update.effective_chat.id
-    context.user_data["broadcast_mode"] = False
-    context.user_data.pop("broadcast_collect_task", None)
-
-    kind = "media album" if len(items) > 1 else "media/message"
-    await update.effective_message.reply_text(
-        "📢 <b>Broadcast Preview Ready</b>\n\n"
-        f"📦 <b>{len(items)}</b> item(s) in this {kind}.\n"
-        "📍 <b>Recipients:</b> all active groups + all users who started the bot.\n"
-        "📝 Captions will be preserved.\n\n"
-        "Do you want to send this broadcast?",
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ Confirm Broadcast", callback_data="owner:broadcast_confirm")],
-            [InlineKeyboardButton("❌ Cancel", callback_data="owner:broadcast_cancel")],
-        ])
     )
 
 
@@ -315,54 +171,24 @@ async def owner_broadcast_message(update, context):
     msg = update.effective_message
     if not msg:
         return False
-
     if msg.text and msg.text.strip() == "/cancel":
-        task = context.user_data.pop("broadcast_collect_task", None)
-        if task:
-            task.cancel()
         context.user_data.pop("broadcast_mode", None)
-        context.user_data.pop("broadcast_items", None)
-        context.user_data.pop("broadcast_media_group_id", None)
         await msg.reply_text("❌ Broadcast cancelled.")
         await owner_start(update, context)
         return True
 
-    supported = bool(msg.text or msg.photo or msg.video or msg.document or msg.audio or msg.voice or msg.animation)
-    if not supported:
-        await msg.reply_text("⚠️ Please send text or supported media. You can send up to 10 media items as one album.")
+    if not (msg.text or msg.photo or msg.video or msg.document or msg.audio or msg.voice or msg.animation):
+        await msg.reply_text("⚠️ Please send text, photo, video, file, audio or voice message.")
         return True
 
-    # A Telegram media album arrives as several updates with the same media_group_id.
-    media_group_id = getattr(msg, "media_group_id", None)
-    if media_group_id:
-        current_group = context.user_data.get("broadcast_media_group_id")
-        if current_group and current_group != media_group_id:
-            await msg.reply_text("⚠️ Please finish the current broadcast album first, or cancel it.")
-            return True
-        context.user_data["broadcast_media_group_id"] = media_group_id
-        items = context.user_data.setdefault("broadcast_items", [])
-        if msg.message_id not in items:
-            if len(items) < 10:
-                items.append(msg.message_id)
-            else:
-                return True
-
-        old_task = context.user_data.get("broadcast_collect_task")
-        if old_task:
-            old_task.cancel()
-        task = asyncio.create_task(_finish_broadcast_collection(update, context))
-        context.user_data["broadcast_collect_task"] = task
-        return True
-
-    # Plain text or a single media item: finalize shortly after the message arrives.
-    context.user_data["broadcast_items"] = [msg.message_id]
+    context.user_data["broadcast_message_id"] = msg.message_id
     context.user_data["broadcast_chat_id"] = msg.chat_id
     context.user_data["broadcast_mode"] = False
+
     await msg.reply_text(
         "📢 <b>Broadcast Preview Ready</b>\n\n"
-        "📍 <b>Recipients:</b> all active groups + all users who started the bot.\n"
-        "📝 Caption will be preserved when present.\n\n"
-        "Do you want to send this broadcast?",
+        "The message/media above will be sent to all active groups.\n\n"
+        "Are you sure you want to broadcast it?",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("✅ Confirm Broadcast", callback_data="owner:broadcast_confirm")],
@@ -372,86 +198,39 @@ async def owner_broadcast_message(update, context):
     return True
 
 
-async def _copy_to_target(context, source_chat_id, message_ids, target_chat_id):
-    """Copy one text/media message or an album to one target."""
-    if len(message_ids) == 1:
-        await context.bot.copy_message(
-            chat_id=target_chat_id,
-            from_chat_id=source_chat_id,
-            message_id=message_ids[0],
-        )
-    else:
-        # Bot API copyMessages preserves the original media/captions and copies
-        # the complete album in one operation. Max 10 is enforced above.
-        await context.bot.copy_messages(
-            chat_id=target_chat_id,
-            from_chat_id=source_chat_id,
-            message_ids=message_ids,
-        )
-
-
 async def _do_broadcast(update, context):
-    query = update.callback_query
-    message_ids = list(context.user_data.get("broadcast_items") or [])
-    source_chat_id = context.user_data.get("broadcast_chat_id") or query.message.chat_id
-    if not message_ids or not source_chat_id:
-        await query.answer("Broadcast data expired. Please start again.", show_alert=True)
+    message_id = context.user_data.get("broadcast_message_id")
+    source_chat_id = context.user_data.get("broadcast_chat_id")
+    if not message_id or not source_chat_id:
+        await update.callback_query.answer("Broadcast data expired. Please start again.", show_alert=True)
         return
 
     groups = await db.active_groups()
-    users = await db.active_users()
-    targets = [int(g["chat_id"]) for g in groups]
-    targets += [int(u["_id"]) for u in users]
-    # Deduplicate while preserving order.
-    targets = list(dict.fromkeys(targets))
-
     sent = failed = 0
-    failed_groups = 0
-    failed_users = 0
-
-    sem = asyncio.Semaphore(15)
-
-    async def send_one(target):
-        nonlocal sent, failed, failed_groups, failed_users
-        async with sem:
+    for group in groups:
+        try:
+            await context.bot.copy_message(
+                chat_id=group["chat_id"],
+                from_chat_id=source_chat_id,
+                message_id=message_id,
+            )
+            sent += 1
+        except Exception:
+            failed += 1
             try:
-                await _copy_to_target(context, source_chat_id, message_ids, target)
-                sent += 1
-            except Exception as exc:
-                failed += 1
-                if target < 0:
-                    failed_groups += 1
-                    try:
-                        await db.deactivate_group(target)
-                    except Exception:
-                        pass
-                else:
-                    failed_users += 1
-                    # A blocked/deleted user should not be retried forever.
-                    try:
-                        await db.deactivate_user(target)
-                    except Exception:
-                        pass
-                logger.warning("Broadcast failed target=%s: %s", target, exc)
+                await db.deactivate_group(group["chat_id"])
+            except Exception:
+                pass
 
-    await asyncio.gather(*(send_one(target) for target in targets))
-
-    for key in ("broadcast_items", "broadcast_chat_id", "broadcast_mode", "broadcast_media_group_id", "broadcast_collect_task"):
-        context.user_data.pop(key, None)
-
-    await query.answer("Broadcast completed")
-    await query.message.reply_text(
-        "📢 <b>Broadcast completed</b>\n\n"
-        f"📦 Items: <b>{len(message_ids)}</b>\n"
-        f"👥 Groups: <b>{len(groups)}</b>\n"
-        f"👤 Users: <b>{len(users)}</b>\n"
-        f"✅ Delivered: <b>{sent}</b>\n"
-        f"❌ Failed: <b>{failed}</b>\n"
-        f"   • Groups failed: {failed_groups}\n"
-        f"   • Users failed: {failed_users}",
+    context.user_data.pop("broadcast_message_id", None)
+    context.user_data.pop("broadcast_chat_id", None)
+    await update.callback_query.answer("Broadcast completed")
+    await update.callback_query.message.reply_text(
+        f"📢 <b>Broadcast completed</b>\n\n✅ Sent: {sent}\n❌ Failed: {failed}",
         parse_mode="HTML",
     )
-    await _show_dashboard(query, context)
+    await _show_dashboard(update.callback_query, context)
+
 
 async def owner_stats(update, context):
     if not owner_only(update):
@@ -460,8 +239,8 @@ async def owner_stats(update, context):
     text = (
         "📊 <b>Statistics</b>\n\n"
         f"👥 Groups: <b>{stats['groups']}</b>\n"
-        f"▶️ Bot Users: <b>{stats['users_started']}</b>\n"
-        f"🚫 Users Banned: <b>{stats['users_banned']}</b>\n"
+        f"▶️ Users started bot: <b>{stats['users_started']}</b>\n"
+        f"🚫 Users banned: <b>{stats['users_banned']}</b>\n"
     )
     if update.callback_query:
         await update.callback_query.edit_message_text(
@@ -555,11 +334,8 @@ async def owner_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "owner:broadcast":
         await query.answer()
         context.user_data["broadcast_mode"] = True
-        context.user_data.pop("broadcast_items", None)
-        context.user_data.pop("broadcast_media_group_id", None)
         await query.message.reply_text(
-            "📢 <b>Broadcast</b>\n\nSend text or up to <b>10 media items</b> as one album.\n"
-            "Supported: photo, video, document/file, audio, voice and animation.\n"
+            "📢 <b>Broadcast</b>\n\nSend text or media (photo/video/file/audio/voice).\n"
             "Caption is preserved.\n\n/cancel to cancel.", parse_mode="HTML"
         )
         return
@@ -569,13 +345,9 @@ async def owner_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "owner:broadcast_cancel":
-        task = context.user_data.pop("broadcast_collect_task", None)
-        if task:
-            task.cancel()
-        context.user_data.pop("broadcast_items", None)
+        context.user_data.pop("broadcast_message_id", None)
         context.user_data.pop("broadcast_chat_id", None)
         context.user_data.pop("broadcast_mode", None)
-        context.user_data.pop("broadcast_media_group_id", None)
         await query.answer("Broadcast cancelled")
         await _show_dashboard(query, context)
         return
@@ -613,3 +385,182 @@ async def owner_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     [InlineKeyboardButton("⬅️ Active Groups", callback_data=f"owner:groups:{page}")]]
         await query.answer()
         await query.edit_message_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+
+# ---------------- User group protection settings ----------------
+
+async def _user_admin_groups(bot, user_id):
+    groups = await db.active_groups()
+    result = []
+    for group in groups:
+        try:
+            member = await bot.get_chat_member(int(group["chat_id"]), int(user_id))
+            if member.status in ("administrator", "creator"):
+                result.append(group)
+        except Exception:
+            continue
+    return result
+
+
+async def user_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if not user or user.id == OWNER_ID:
+        return
+    groups = await _user_admin_groups(context.bot, user.id)
+    keyboard = []
+    for group in groups[:50]:
+        title = (group.get("title") or str(group.get("chat_id")))[:40]
+        keyboard.append([InlineKeyboardButton(f"👥 {title}", callback_data=f"groupcfg:open:{group['chat_id']}")])
+
+    text = (
+        "🛡️ <b>Bio Link Protector is active.</b>\n\n"
+        "Please add me as an administrator with <b>all administrator permissions</b>.\n\n"
+        "Protection will start automatically once the required permissions are granted."
+    )
+    if groups:
+        text += "\n\n⚙️ <b>Group Settings</b>\nSelect your group to configure protection."
+    markup = InlineKeyboardMarkup(keyboard) if keyboard else None
+    await update.effective_message.reply_text(text, parse_mode="HTML", reply_markup=markup)
+
+
+async def _settings_screen(query, bot, user_id, chat_id):
+    groups = await _user_admin_groups(bot, user_id)
+    group = next((g for g in groups if int(g.get("chat_id")) == int(chat_id)), None)
+    if not group:
+        await query.answer("You are not an admin of this group.", show_alert=True)
+        return
+
+    s = await db.get_protection_settings(chat_id)
+    action = s["message_action"]
+    action_label = "🚫 Ban" if action == "ban" else "⚠️ Warning"
+    delete_label = "🟢 ON" if s["delete_after_warning"] else "🔴 OFF"
+    join_label = "🟢 ON" if s["detect_on_join"] else "🔴 OFF"
+    punishment = "🔨 Ban" if s["punishment"] == "ban" else "🔇 Mute"
+    limit = "Off" if int(s["warning_limit"]) == 0 else str(s["warning_limit"])
+
+    text = (
+        f"⚙️ <b>{escape(group.get('title') or 'Group')}</b>\n\n"
+        "Configure when the bio is checked and what action is taken.\n\n"
+        f"🔎 <b>Detect on Join:</b> {join_label}\n"
+        f"💬 <b>Message Action:</b> {action_label}\n"
+    )
+    if action == "warning":
+        text += f"⚠️ <b>Warning Limit:</b> {limit}\n"
+        text += f"🗑️ <b>Delete after Warning:</b> {delete_label}\n"
+        text += f"⚖️ <b>Punishment:</b> {punishment}\n"
+
+    keyboard = [
+        [InlineKeyboardButton(f"🔎 Detect on Join: {join_label}", callback_data=f"groupcfg:join:{chat_id}")],
+        [InlineKeyboardButton(f"💬 Message Action: {action_label}", callback_data=f"groupcfg:action:{chat_id}")],
+    ]
+    if action == "warning":
+        keyboard.append([InlineKeyboardButton(f"⚠️ Warning Limit: {limit}", callback_data=f"groupcfg:limit:{chat_id}")])
+        keyboard.append([InlineKeyboardButton(f"🗑️ Delete after Warning: {delete_label}", callback_data=f"groupcfg:delete:{chat_id}")])
+        keyboard.append([InlineKeyboardButton(f"⚖️ Punishment: {punishment}", callback_data=f"groupcfg:punish:{chat_id}")])
+    keyboard.append([InlineKeyboardButton("⬅️ My Groups", callback_data="groupcfg:list")])
+    await query.edit_message_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+async def _user_group_list(query, bot, user_id):
+    groups = await _user_admin_groups(bot, user_id)
+    keyboard = []
+    for group in groups[:50]:
+        title = (group.get("title") or str(group.get("chat_id")))[:40]
+        keyboard.append([InlineKeyboardButton(f"👥 {title}", callback_data=f"groupcfg:open:{group['chat_id']}")])
+    keyboard.append([InlineKeyboardButton("⬅️ Back", callback_data="groupcfg:back")])
+    await query.edit_message_text(
+        "⚙️ <b>My Groups</b>\n\nSelect a group to configure protection.",
+        parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+
+async def user_settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user = update.effective_user
+    if not query or not user or user.id == OWNER_ID:
+        return
+    data = query.data or ""
+    try:
+        if data == "groupcfg:list":
+            await query.answer()
+            await _user_group_list(query, context.bot, user.id)
+            return
+        if data == "groupcfg:back":
+            await query.answer()
+            await user_start(update, context)
+            return
+
+        parts = data.split(":")
+        if len(parts) < 3:
+            return
+        action = parts[1]
+        chat_id = int(parts[2])
+
+        groups = await _user_admin_groups(context.bot, user.id)
+        if not any(int(g.get("chat_id")) == chat_id for g in groups):
+            await query.answer("You are not an admin of this group.", show_alert=True)
+            return
+
+        if action == "open":
+            await query.answer()
+            await _settings_screen(query, context.bot, user.id, chat_id)
+            return
+
+        if action == "join":
+            s = await db.get_protection_settings(chat_id)
+            await db.update_protection_setting(chat_id, "detect_on_join", not s["detect_on_join"])
+            await query.answer("Join detection updated")
+            await _settings_screen(query, context.bot, user.id, chat_id)
+            return
+
+        if action == "action":
+            s = await db.get_protection_settings(chat_id)
+            new_action = "warning" if s["message_action"] == "ban" else "ban"
+            await db.update_protection_setting(chat_id, "message_action", new_action)
+            await query.answer("Message action updated")
+            await _settings_screen(query, context.bot, user.id, chat_id)
+            return
+
+        if action == "delete":
+            s = await db.get_protection_settings(chat_id)
+            await db.update_protection_setting(chat_id, "delete_after_warning", not s["delete_after_warning"])
+            await query.answer("Delete setting updated")
+            await _settings_screen(query, context.bot, user.id, chat_id)
+            return
+
+        if action == "punish":
+            s = await db.get_protection_settings(chat_id)
+            new_value = "mute" if s["punishment"] == "ban" else "ban"
+            await db.update_protection_setting(chat_id, "punishment", new_value)
+            await query.answer("Punishment updated")
+            await _settings_screen(query, context.bot, user.id, chat_id)
+            return
+
+        if action == "limit":
+            keyboard = []
+            row = []
+            for n in range(1, 11):
+                row.append(InlineKeyboardButton(str(n), callback_data=f"groupcfg:setlimit:{chat_id}:{n}"))
+                if len(row) == 5:
+                    keyboard.append(row); row = []
+            if row:
+                keyboard.append(row)
+            keyboard.append([InlineKeyboardButton("🚫 Off", callback_data=f"groupcfg:setlimit:{chat_id}:0")])
+            keyboard.append([InlineKeyboardButton("⬅️ Back", callback_data=f"groupcfg:open:{chat_id}")])
+            await query.answer()
+            await query.edit_message_text(
+                "⚠️ <b>Set your warning limit</b>\n\nChoose how many warnings a user can receive before the selected punishment is applied.",
+                parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            return
+
+        if action == "setlimit":
+            if len(parts) != 4:
+                return
+            value = int(parts[3])
+            await db.update_protection_setting(chat_id, "warning_limit", value)
+            await query.answer(f"Warning limit: {'Off' if value == 0 else value}")
+            await _settings_screen(query, context.bot, user.id, chat_id)
+            return
+    except Exception as exc:
+        logger.exception("User group settings callback failed")
+        await query.answer("Could not update setting", show_alert=True)
