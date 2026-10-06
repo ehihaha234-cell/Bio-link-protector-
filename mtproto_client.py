@@ -1,54 +1,102 @@
 import asyncio
 import logging
-import os
+import threading
 from typing import Optional
 
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from telethon.tl.functions.users import GetFullUserRequest
 from telethon.tl.functions.messages import ImportChatInviteRequest
-from telethon.errors import RPCError, UserAlreadyParticipantError, InviteHashExpiredError, InviteHashInvalidError
+from telethon.errors import (
+    RPCError,
+    UserAlreadyParticipantError,
+    InviteHashExpiredError,
+    InviteHashInvalidError,
+)
 
 from config import MT_API_ID, MT_API_HASH, MT_SESSION
 
 logger = logging.getLogger(__name__)
 
+
 class MTProtoService:
     def __init__(self):
         self.client: Optional[TelegramClient] = None
         self.ready = False
+        # MTProto runs in its own thread/event loop, while the Bot API
+        # application runs in another event loop. Use a thread-safe flag
+        # instead of asyncio.Event across those loops.
+        self._ready_event = threading.Event()
+        self._start_lock = threading.Lock()
 
     def _build(self):
         if not MT_API_ID or not MT_API_HASH or not MT_SESSION:
             raise RuntimeError("MT_API_ID, MT_API_HASH and MT_SESSION are required")
+
         self.client = TelegramClient(
-            StringSession(MT_SESSION), MT_API_ID, MT_API_HASH,
+            StringSession(MT_SESSION),
+            MT_API_ID,
+            MT_API_HASH,
             auto_reconnect=True,
         )
         return self.client
 
     async def start(self):
-        client = self._build()
-        await client.connect()
-        if not await client.is_user_authorized():
-            raise RuntimeError("MT_SESSION is invalid or not authorized")
-        me = await client.get_me()
-        await client.get_dialogs(limit=None)
-        self.ready = True
-        logger.info("MTProto connected as @%s (%s)", me.username or "no_username", me.id)
-        return client
+        # Do not create multiple Telethon clients if startup is triggered twice.
+        with self._start_lock:
+            if self.client and self.ready:
+                return self.client
+            self.ready = False
+            self._ready_event.clear()
+            client = self._build()
+
+        try:
+            await client.connect()
+
+            if not await client.is_user_authorized():
+                raise RuntimeError("MT_SESSION is invalid or not authorized")
+
+            me = await client.get_me()
+            self.ready = True
+            self._ready_event.set()
+
+            logger.info(
+                "MTProto connected as @%s (%s)",
+                me.username or "no_username",
+                me.id,
+            )
+            return client
+        except Exception:
+            self.ready = False
+            self._ready_event.clear()
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+            self.client = None
+            raise
+
+    async def wait_until_ready(self, timeout: float = 45.0) -> bool:
+        """Wait for the shared owner MTProto account from another thread."""
+        if self.ready and self.client:
+            return True
+
+        deadline = asyncio.get_running_loop().time() + timeout
+        while asyncio.get_running_loop().time() < deadline:
+            if self.ready and self.client:
+                return True
+            await asyncio.sleep(0.25)
+        return bool(self.ready and self.client)
 
     async def get_bio(self, user_entity) -> Optional[str]:
         if not self.client or not self.ready:
             logger.warning("MTProto bio lookup skipped: client not ready")
             return None
+
         try:
             full = await self.client(GetFullUserRequest(user_entity))
             about = getattr(full.full_user, "about", None) or ""
 
-            # Telegram can store a clickable URL as an entity even when the
-            # visible bio text does not contain the URL. Include those URLs
-            # in the text checked by the protector.
             entities = getattr(full.full_user, "about_entities", None) or []
             hidden_urls = []
             for ent in entities:
@@ -60,24 +108,25 @@ class MTProtoService:
             if hidden_urls:
                 combined += " " + " ".join(hidden_urls)
 
-            logger.info("MTProto bio fetched: user=%s bio=%r", getattr(user_entity, "id", "?"), combined)
+            logger.info(
+                "MTProto bio fetched: user=%s bio=%r",
+                getattr(user_entity, "id", "?"),
+                combined,
+            )
             return combined
         except (RPCError, ValueError, TypeError) as exc:
             logger.warning("MTProto bio lookup failed: %s", exc)
             return None
 
-
     async def join_group_by_invite(self, invite_link: str):
         """Join a protected group using a bot-generated invite link."""
-        if not self.client or not self.ready:
+        if not await self.wait_until_ready(timeout=45):
             raise RuntimeError("MTProto client is not ready")
 
         link = (invite_link or "").strip()
         if not link:
             raise ValueError("Empty invite link")
 
-        # Bot-generated private invite links are normally https://t.me/+HASH.
-        # Also accept the legacy /joinchat/HASH form.
         if "+" in link:
             invite_hash = link.split("+", 1)[1].split("?", 1)[0].strip("/")
         elif "/joinchat/" in link:
@@ -96,7 +145,7 @@ class MTProtoService:
         return True
 
     async def refresh_entity(self, entity):
-        if not self.client:
+        if not self.client or not self.ready:
             return None
         try:
             return await self.client.get_entity(entity)
@@ -107,6 +156,8 @@ class MTProtoService:
     async def stop(self):
         if self.client:
             await self.client.disconnect()
-            self.ready = False
+        self.ready = False
+        self._ready_event.clear()
+
 
 mt = MTProtoService()

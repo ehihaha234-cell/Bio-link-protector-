@@ -29,7 +29,13 @@ logger = logging.getLogger(__name__)
 
 def _run_mtproto():
     async def runner():
-        client = await mt.start()
+        while True:
+            try:
+                client = await mt.start()
+                break
+            except Exception:
+                logger.exception("MTProto startup failed; retrying in 10 seconds")
+                await asyncio.sleep(10)
 
         @client.on(events.NewMessage())
         async def on_new_message(event):
@@ -169,8 +175,8 @@ def main():
     Thread = threading.Thread
     Thread(target=run_health_server, daemon=True).start()
 
-    # MTProto account is a separate Telegram user account. It must already be
-    # logged in via MT_SESSION and must be a member of protected groups.
+    # One owner MTProto user account is shared by all protected groups.
+    # It joins each group automatically during setup.
     threading.Thread(target=_run_mtproto, daemon=True, name="mtproto").start()
 
     app = Application.builder().token(BOT_TOKEN).build()
