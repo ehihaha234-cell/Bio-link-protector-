@@ -1,3 +1,4 @@
+import asyncio
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -83,13 +84,20 @@ async def check_and_ban(bot: Bot, chat_id: int, user: User, mt_entity=None, mess
             result.reason = f"Ban failed: {exc}"
             return result
 
-    # Warning mode: increment persistent group/user warning count.
-    count = await db.increment_warning(chat_id, user.id)
+    # Warning mode: do the warning counter update and message deletion in
+    # parallel. Both are independent network operations, so waiting for one
+    # before starting the other unnecessarily delays the warning.
+    count_task = asyncio.create_task(db.increment_warning(chat_id, user.id))
+    delete_task = None
+    if delete_after and message_id:
+        delete_task = asyncio.create_task(bot.delete_message(chat_id, message_id))
+
+    count = await count_task
     result.warning_count = count
 
-    if delete_after and message_id:
+    if delete_task is not None:
         try:
-            await bot.delete_message(chat_id, message_id)
+            await delete_task
             result.deleted = True
         except TelegramError:
             pass

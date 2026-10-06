@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 import asyncio
-from pymongo import MongoClient
+from pymongo import MongoClient, ReturnDocument
 
 from config import MONGO_URI, DATABASE_NAME
 
@@ -144,12 +144,11 @@ class Database:
             self.warning_counts.find_one_and_update,
             {"chat_id": int(chat_id), "user_id": int(user_id)},
             {"$inc": {"count": 1}, "$set": {"updated_at": datetime.now(timezone.utc)}},
-            upsert=True, return_document=True,
+            upsert=True, return_document=ReturnDocument.AFTER,
         )
-        # PyMongo ReturnDocument enum is not necessary here on older versions;
-        # fetch after update for a deterministic count.
-        latest = await self._call(self.warning_counts.find_one, {"chat_id": int(chat_id), "user_id": int(user_id)})
-        return int((latest or {}).get("count", 1) or 1)
+        # Return the incremented document directly: one MongoDB round-trip
+        # instead of update + second find. This keeps warning responses fast.
+        return int((doc or {}).get("count", 1) or 1)
 
     async def get_warning_count(self, chat_id, user_id):
         if self.warning_counts is None:
