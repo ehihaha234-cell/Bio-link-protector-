@@ -83,19 +83,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await db.record_user_start(user.id)
     await update.message.reply_text(
-        "🛡️ Bio Link Protector is active.\n\n"
-        "Add me as an administrator with <b>all administrator permissions</b>.\n\n"
-        "Required permissions include:\n"
-        "• Manage chat\n"
-        "• Change group info\n"
-        "• Delete messages\n"
-        "• Invite users / create invite links\n"
-        "• Ban/restrict users\n"
-        "• Pin messages\n"
-        "• Manage video chats\n"
-        "• Add new admins\n"
-        "• Manage topics\n\n"
-        "If any permission is missing, I will tell the admin exactly which permission must be enabled.",
+        "🛡️ <b>Bio Link Protector is active.</b>\n\n"
+        "Please add me as an administrator with <b>all administrator permissions</b>.\n\n"
+        "Protection will start automatically once the required permissions are granted.",
         parse_mode="HTML",
     )
 
