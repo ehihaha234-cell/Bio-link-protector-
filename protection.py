@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from telegram import Bot, Chat, User
 from telegram.error import TelegramError
 from telegram import ChatPermissions
+from config import BOT_TOKEN
 
 from mtproto_client import mt
 from database import db
@@ -151,13 +152,24 @@ async def send_group_warning(bot: Bot, chat: Chat, user: User, result: Protectio
         sent = await bot.send_message(chat.id, text, parse_mode="HTML", disable_web_page_preview=True)
         # Auto-delete only the warning notification. The offending user message
         # is controlled separately by the "Delete after Warning" setting.
+        # IMPORTANT: the protection handler uses a short-lived Bot client.
+        # Do not reuse that client after the handler exits because its HTTP
+        # session is closed. Create a fresh Bot client inside the delayed task.
         if result.warning_auto_delete > 0:
+            delay = min(result.warning_auto_delete, 86400)
+            warning_chat_id = chat.id
+            warning_message_id = sent.message_id
+
             async def _delete_warning_later():
-                await asyncio.sleep(min(result.warning_auto_delete, 86400))
+                await asyncio.sleep(delay)
                 try:
-                    await bot.delete_message(chat.id, sent.message_id)
+                    async with Bot(BOT_TOKEN) as cleanup_bot:
+                        await cleanup_bot.delete_message(warning_chat_id, warning_message_id)
                 except TelegramError:
                     pass
+                except Exception:
+                    pass
+
             asyncio.create_task(_delete_warning_later())
     except TelegramError:
         pass
