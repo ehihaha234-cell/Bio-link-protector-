@@ -49,6 +49,29 @@ class Database:
         doc = await self.groups.find_one({"chat_id": chat_id}, {"delete_seconds": 1})
         return int((doc or {}).get("delete_seconds", default) or 0)
 
+    async def get_mt_session(self):
+        if self.settings is None: return None
+        doc = await self.settings.find_one({"_id": "mtproto_owner"})
+        return (doc or {}).get("session")
+
+    async def save_mt_session(self, session: str, phone: str = "", user_id: int = 0, username: str = ""):
+        if self.settings is None: return False
+        await self.settings.update_one({"_id":"mtproto_owner"},{"$set":{
+            "session":session,"phone":phone,"user_id":int(user_id or 0),
+            "username":username or "","connected":True,
+            "updated_at":datetime.now(timezone.utc)}},upsert=True)
+        return True
+
+    async def get_mt_account(self):
+        if self.settings is None: return None
+        return await self.settings.find_one({"_id":"mtproto_owner"})
+
+    async def clear_mt_session(self):
+        if self.settings is None: return False
+        await self.settings.update_one({"_id":"mtproto_owner"},{"$set":{
+            "connected":False,"session":"","phone":"","user_id":0,"username":""}},upsert=True)
+        return True
+
     async def count_groups(self):
         if self.groups is None:
             return 0
