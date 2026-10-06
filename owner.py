@@ -352,8 +352,8 @@ async def owner_stats(update, context):
     text = (
         "📊 <b>Statistics</b>\n\n"
         f"👥 Groups: <b>{stats['groups']}</b>\n"
-        f"▶️ Users started bot: <b>{stats['users_started']}</b>\n"
-        f"🚫 Users banned: <b>{stats['users_banned']}</b>\n"
+        f"▶️ Bot Users: <b>{stats['users_started']}</b>\n"
+        f"🚫 Users Banned: <b>{stats['users_banned']}</b>\n"
     )
     if update.callback_query:
         await update.callback_query.edit_message_text(

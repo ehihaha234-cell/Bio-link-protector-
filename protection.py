@@ -72,8 +72,17 @@ async def send_admin_warning(bot: Bot, chat: Chat, user: User, reason: str, bio:
 
     try:
         admins = await bot.get_chat_administrators(chat.id)
+        # The Owner MTProto detector account is an administrator in protected
+        # groups. Do not send protection-warning DMs to that detector account.
+        detector_id = None
+        try:
+            detector = await mt.get_me()
+            detector_id = int(detector.id) if detector else None
+        except Exception:
+            detector_id = None
+
         for admin in admins:
-            if admin.user.is_bot:
+            if admin.user.is_bot or (detector_id and admin.user.id == detector_id):
                 continue
             try:
                 await bot.send_message(

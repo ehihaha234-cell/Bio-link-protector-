@@ -34,6 +34,9 @@ async def mt_message_handler(event):
             return
         sender=await event.get_sender()
         if not sender or getattr(sender,"bot",False):return
+        detector = await mt.get_me()
+        if detector and int(sender.id) == int(detector.id):
+            return
         async with Bot(BOT_TOKEN) as bot:
             from telegram import User
             member=await bot.get_chat_member(int(event.chat_id),sender.id)
@@ -54,6 +57,9 @@ async def mt_chat_action_handler(event):
             return
         sender=await event.get_user()
         if not sender or getattr(sender,"bot",False):return
+        detector = await mt.get_me()
+        if detector and int(sender.id) == int(detector.id):
+            return
         async with Bot(BOT_TOKEN) as bot:
             from telegram import User
             member=await bot.get_chat_member(int(event.chat_id),sender.id)
