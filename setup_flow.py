@@ -88,7 +88,7 @@ async def setup_mtproto_for_group(bot: Bot, chat_id: int, title: str, actor=None
 
         await mt.join_group_by_invite(invite_link)
 
-        me = await mt.client.get_me()
+        me = await mt.get_me()
         mt_user_id = int(me.id)
 
         # Bot must itself have the "Add new admins" right to do this.

@@ -107,31 +107,49 @@ class MTProtoService:
             await asyncio.sleep(.25)
         return bool(self.ready and self.client)
 
+    async def get_me(self):
+        async def op():
+            if not self.client or not self.ready:
+                return None
+            return await self.client.get_me()
+        return await self._run_on_mt_loop(op())
+
     async def get_bio(self,user_entity):
-        if not self.client or not self.ready:return None
-        try:
-            full=await self.client(GetFullUserRequest(user_entity)); about=getattr(full.full_user,"about",None) or ""
-            entities=getattr(full.full_user,"about_entities",None) or []
-            urls=[str(getattr(e,"url")) for e in entities if getattr(e,"url",None)]
-            return about+((" "+" ".join(urls)) if urls else "")
-        except (RPCError,ValueError,TypeError) as e:
-            logger.warning("MTProto bio lookup failed: %s",e); return None
+        async def op():
+            if not self.client or not self.ready:
+                return None
+            try:
+                full=await self.client(GetFullUserRequest(user_entity)); about=getattr(full.full_user,"about",None) or ""
+                entities=getattr(full.full_user,"about_entities",None) or []
+                urls=[str(getattr(e,"url")) for e in entities if getattr(e,"url",None)]
+                return about+((" "+" ".join(urls)) if urls else "")
+            except (RPCError,ValueError,TypeError) as e:
+                logger.warning("MTProto bio lookup failed: %s",e); return None
+        return await self._run_on_mt_loop(op())
 
     async def join_group_by_invite(self,invite_link):
-        if not await self.wait_until_ready(45): raise RuntimeError("MTProto client is not ready")
-        link=(invite_link or "").strip()
-        if "+" in link: h=link.split("+",1)[1].split("?",1)[0].strip("/")
-        elif "/joinchat/" in link: h=link.split("/joinchat/",1)[1].split("?",1)[0].strip("/")
-        else: raise ValueError("Unsupported invite link format")
-        try: await self.client(ImportChatInviteRequest(h))
-        except UserAlreadyParticipantError: pass
-        except (InviteHashExpiredError,InviteHashInvalidError): raise
-        return True
+        async def op():
+            if not self.client or not self.ready:
+                raise RuntimeError("MTProto client is not ready")
+            link=(invite_link or "").strip()
+            if "+" in link: h=link.split("+",1)[1].split("?",1)[0].strip("/")
+            elif "/joinchat/" in link: h=link.split("/joinchat/",1)[1].split("?",1)[0].strip("/")
+            else: raise ValueError("Unsupported invite link format")
+            try:
+                await self.client(ImportChatInviteRequest(h))
+            except UserAlreadyParticipantError:
+                pass
+            except (InviteHashExpiredError,InviteHashInvalidError):
+                raise
+            return True
+        return await self._run_on_mt_loop(op())
 
     async def refresh_entity(self,entity):
-        if not self.client or not self.ready:return None
-        try:return await self.client.get_entity(entity)
-        except Exception:return None
+        async def op():
+            if not self.client or not self.ready:return None
+            try:return await self.client.get_entity(entity)
+            except Exception:return None
+        return await self._run_on_mt_loop(op())
 
     async def stop(self):
         if self.client: await self.client.disconnect()
