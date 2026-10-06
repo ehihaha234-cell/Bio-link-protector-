@@ -7,7 +7,7 @@ from telegram import Update
 from telegram.constants import ChatType
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, ChatMemberHandler,
-    ContextTypes, filters
+    ContextTypes, filters, CallbackQueryHandler
 )
 from telegram import Bot
 from telethon import events
@@ -16,7 +16,7 @@ from config import BOT_TOKEN, OWNER_ID
 from database import db
 from protection import check_and_ban, is_admin, send_admin_warning
 from auto_delete import schedule_delete
-from owner import owner_start, owner_broadcast, owner_stats, owner_groups, mtproto_menu, mtlogin, mtlogout, mtlogin_message
+from owner import owner_start, owner_broadcast, owner_stats, owner_groups, mtproto_menu, mtlogin, mtlogout, mtlogin_message, owner_callback, owner_broadcast_message
 from mtproto_client import mt
 from setup_flow import setup_mtproto_for_group
 
@@ -30,6 +30,8 @@ logger = logging.getLogger(__name__)
 async def mt_message_handler(event):
     if not event.is_group:return
     try:
+        if await db.is_group_paused(int(event.chat_id)):
+            return
         sender=await event.get_sender()
         if not sender or getattr(sender,"bot",False):return
         async with Bot(BOT_TOKEN) as bot:
@@ -48,6 +50,8 @@ async def mt_message_handler(event):
 async def mt_chat_action_handler(event):
     if not event.is_group or not (event.user_joined or event.user_added):return
     try:
+        if await db.is_group_paused(int(event.chat_id)):
+            return
         sender=await event.get_user()
         if not sender or getattr(sender,"bot",False):return
         async with Bot(BOT_TOKEN) as bot:
@@ -77,6 +81,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info("Owner /start received from Telegram user id=%s", user.id)
         await owner_start(update, context)
         return
+    await db.record_user_start(user.id)
     await update.message.reply_text(
         "🛡️ Bio Link Protector is active.\n\n"
         "Add me as an administrator with <b>all administrator permissions</b>.\n\n"
@@ -103,6 +108,8 @@ async def group_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await db.ensure_group(chat.id, chat.title or str(chat.id), chat.type)
+    if await db.is_group_paused(chat.id):
+        return
 
     # MTProto listener performs the actual bio lookup/ban. This handler only
     # handles message retention and database bookkeeping.
@@ -149,13 +156,15 @@ def main():
 
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(owner_callback, pattern=r"^owner:"))
     app.add_handler(CommandHandler("broadcast", owner_broadcast))
     app.add_handler(CommandHandler("stats", owner_stats))
     app.add_handler(CommandHandler("groups", owner_groups))
     app.add_handler(CommandHandler("mtproto", mtproto_menu))
     app.add_handler(CommandHandler("mtlogin", mtlogin))
     app.add_handler(CommandHandler("mtlogout", mtlogout))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, mtlogin_message))
+    app.add_handler(MessageHandler(filters.ChatType.PRIVATE & ~filters.COMMAND, owner_broadcast_message), group=0)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, mtlogin_message), group=1)
     app.add_handler(ChatMemberHandler(member_update, ChatMemberHandler.CHAT_MEMBER))
     app.add_handler(ChatMemberHandler(my_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
     app.add_handler(MessageHandler(filters.ALL & ~filters.StatusUpdate.ALL, group_message))

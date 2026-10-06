@@ -48,6 +48,11 @@ async def check_and_ban(bot: Bot, chat_id: int, user: User, mt_entity=None) -> P
 
     try:
         await bot.ban_chat_member(chat_id, user.id)
+        try:
+            from database import db
+            await db.record_user_banned(user.id, chat_id)
+        except Exception:
+            pass
         return ProtectionResult(True, "Prohibited link detected in bio", bio=bio)
     except TelegramError as exc:
         return ProtectionResult(False, f"Ban failed: {exc}", bio=bio)
