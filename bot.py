@@ -72,7 +72,9 @@ def _run_mtproto():
     asyncio.run(runner())
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user and update.effective_user.id == OWNER_ID:
+    user = update.effective_user
+    if user and user.id == OWNER_ID:
+        logger.info("Owner /start received from Telegram user id=%s", user.id)
         await owner_start(update, context)
         return
     await update.message.reply_text(

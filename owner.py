@@ -7,13 +7,65 @@ from mtproto_client import mt
 def owner_only(update): return bool(update.effective_user and update.effective_user.id==OWNER_ID)
 
 async def owner_start(update,context):
-    if not owner_only(update): return
-    groups=await db.count_groups(); acc=await db.get_mt_account()
-    status=f"🟢 Connected\n📱 {acc.get('phone','Unknown')}" if acc and acc.get("connected") else "🔴 Not connected"
-    await update.effective_message.reply_text(
-        "👑 Bio Link Protector Owner Panel\n\n"
-        f"👥 Active Groups: {groups}\n🔐 MTProto Account: {status}\n\n"
-        "Commands:\n/mtproto - MTProto account settings\n/broadcast - Broadcast\n/stats - Statistics\n/groups - Groups")
+    if not owner_only(update):
+        return
+
+    # Send the Owner dashboard first. Do not let an optional MongoDB/settings
+    # lookup prevent the Owner from getting any response.
+    msg = update.effective_message
+    try:
+        await msg.reply_text(
+            "👑 Bio Link Protector Owner Panel\n\n"
+            "👥 Active Groups: loading...\n"
+            "🔐 MTProto Account: checking...\n\n"
+            "Commands:\n"
+            "/mtproto - MTProto account settings\n"
+            "/mtlogin - Login / Change MTProto account\n"
+            "/mtlogout - Logout MTProto account\n"
+            "/broadcast - Broadcast\n"
+            "/stats - Statistics\n"
+            "/groups - Groups"
+        )
+    except Exception:
+        # Let the application logger report Telegram send failures.
+        raise
+
+    # Update the dashboard with live values when MongoDB is available.
+    try:
+        groups = await db.count_groups()
+    except Exception as e:
+        logger = __import__("logging").getLogger(__name__)
+        logger.exception("Owner dashboard group count failed: %s", e)
+        groups = 0
+
+    try:
+        acc = await db.get_mt_account()
+    except Exception as e:
+        logger = __import__("logging").getLogger(__name__)
+        logger.exception("Owner dashboard MTProto status failed: %s", e)
+        acc = None
+
+    status = (
+        f"🟢 Connected\n📱 {acc.get('phone','Unknown')}"
+        if acc and acc.get("connected")
+        else "🔴 Not connected"
+    )
+
+    try:
+        await msg.reply_text(
+            "👑 Bio Link Protector Owner Panel\n\n"
+            f"👥 Active Groups: {groups}\n"
+            f"🔐 MTProto Account: {status}\n\n"
+            "Commands:\n"
+            "/mtproto - MTProto account settings\n"
+            "/mtlogin - Login / Change account\n"
+            "/mtlogout - Logout\n"
+            "/broadcast - Broadcast\n"
+            "/stats - Statistics\n"
+            "/groups - Groups"
+        )
+    except Exception:
+        raise
 
 async def mtproto_menu(update,context):
     if not owner_only(update): return
