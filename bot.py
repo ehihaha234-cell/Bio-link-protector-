@@ -79,8 +79,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await update.message.reply_text(
         "🛡️ Bio Link Protector is active.\n\n"
-        "Add me as an administrator to a group with permission to ban users "
-        "and delete messages. Protection works automatically."
+        "Add me as an administrator with <b>all administrator permissions</b>.\n\n"
+        "Required permissions include:\n"
+        "• Manage chat\n"
+        "• Change group info\n"
+        "• Delete messages\n"
+        "• Invite users / create invite links\n"
+        "• Ban/restrict users\n"
+        "• Pin messages\n"
+        "• Manage video chats\n"
+        "• Add new admins\n"
+        "• Manage topics\n\n"
+        "If any permission is missing, I will tell the admin exactly which permission must be enabled.",
+        parse_mode="HTML",
     )
 
 

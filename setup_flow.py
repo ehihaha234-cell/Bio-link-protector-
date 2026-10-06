@@ -6,11 +6,21 @@ from mtproto_client import mt
 
 logger = logging.getLogger(__name__)
 
+# The protector setup needs the bot to be a full administrator so it can
+# create the MTProto setup invite, promote the shared MTProto account,
+# delete offending messages, and ban/restrict users.  Keep the labels
+# user-friendly because they are shown when the bot is added with
+# incomplete administrator rights.
 REQUIRED = {
-    "can_restrict_members": "Ban/restrict users",
+    "can_manage_chat": "Manage chat",
+    "can_change_info": "Change group info",
     "can_delete_messages": "Delete messages",
     "can_invite_users": "Invite users / create invite links",
+    "can_restrict_members": "Ban/restrict users",
+    "can_pin_messages": "Pin messages",
+    "can_manage_video_chats": "Manage video chats",
     "can_promote_members": "Add new admins",
+    "can_manage_topics": "Manage topics",
 }
 
 
@@ -57,9 +67,11 @@ async def setup_mtproto_for_group(bot: Bot, chat_id: int, title: str, actor=None
             chat_id,
             actor,
             "⚠️ <b>Admin Permissions Required</b>\n\n"
-            "I need the following admin permissions before Link Protector can be enabled:\n"
+            "🛡️ <b>Bio Link Protector needs full administrator permissions.</b>\n\n"
+            "❌ <b>Missing permissions:</b>\n"
             f"{missing_text}\n\n"
-            "Please give me these permissions, then add/restart the bot setup.",
+            "Please edit the bot's administrator rights and enable the missing permissions above. "
+            "Protection/setup will not continue until all required rights are enabled.",
         )
         return False
 
@@ -73,8 +85,8 @@ async def setup_mtproto_for_group(bot: Bot, chat_id: int, title: str, actor=None
             actor,
             "❌ <b>MTProto setup failed</b>\n\n"
             "<code>MTProto client is not ready</code>\n\n"
-            "The owner MTProto account could not become ready. "
-            "Check MT_API_ID, MT_API_HASH and MT_SESSION, then restart the service.",
+            "The Owner MTProto account could not become ready. "
+            "Please make sure the Owner MTProto account is connected in the Owner Panel, then try again.",
         )
         return False
 
