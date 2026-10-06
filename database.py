@@ -28,7 +28,7 @@ class Database:
             self.groups.update_one,
             {"chat_id": chat_id},
             {"$set": {"title": title, "chat_type": chat_type, "active": True, "updated_at": now},
-             "$setOnInsert": {"created_at": now, "delete_seconds": 0, "paused": False, "detect_on_join": True, "message_action": "ban", "delete_after_warning": True, "punishment": "mute", "warning_limit": 3}},
+             "$setOnInsert": {"created_at": now, "delete_seconds": 0, "paused": False, "detect_on_join": True, "message_action": "ban", "delete_after_warning": True, "warning_auto_delete": 0, "punishment": "mute", "warning_limit": 3}},
             upsert=True,
         )
 
@@ -117,22 +117,23 @@ class Database:
 
     async def get_protection_settings(self, chat_id):
         if self.groups is None:
-            return {"detect_on_join": True, "message_action": "ban", "delete_after_warning": True, "punishment": "mute", "warning_limit": 3}
+            return {"detect_on_join": True, "message_action": "ban", "delete_after_warning": True, "warning_auto_delete": 0, "punishment": "mute", "warning_limit": 3}
         doc = await self._call(self.groups.find_one, {"chat_id": int(chat_id)}, {
-            "detect_on_join": 1, "message_action": 1, "delete_after_warning": 1, "punishment": 1, "warning_limit": 1
+            "detect_on_join": 1, "message_action": 1, "delete_after_warning": 1, "warning_auto_delete": 1, "punishment": 1, "warning_limit": 1
         })
         return {
             "detect_on_join": bool((doc or {}).get("detect_on_join", True)),
             "message_action": (doc or {}).get("message_action", "ban"),
             "delete_after_warning": bool((doc or {}).get("delete_after_warning", True)),
+            "warning_auto_delete": max(0, int((doc or {}).get("warning_auto_delete", 0) or 0)),
             "punishment": (doc or {}).get("punishment", "mute"),
-            "warning_limit": max(1, int((doc or {}).get("warning_limit", 3) or 3)),
+            "warning_limit": max(0, int((doc or {}).get("warning_limit", 3) if (doc or {}).get("warning_limit", 3) is not None else 3)),
         }
 
     async def update_protection_setting(self, chat_id, key, value):
         if self.groups is None:
             return
-        allowed = {"detect_on_join", "message_action", "delete_after_warning", "punishment", "warning_limit"}
+        allowed = {"detect_on_join", "message_action", "delete_after_warning", "warning_auto_delete", "punishment", "warning_limit"}
         if key not in allowed:
             raise ValueError("Invalid protection setting")
         await self._call(self.groups.update_one, {"chat_id": int(chat_id)}, {"$set": {key: value}}, upsert=True)

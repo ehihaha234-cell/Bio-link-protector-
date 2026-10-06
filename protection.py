@@ -26,6 +26,8 @@ class ProtectionResult:
     reason: str = ""
     bio: str = ""
     deleted: bool = False
+    warning_message_id: int = 0
+    warning_auto_delete: int = 0
 
 
 def has_prohibited_link(text: str | None) -> bool:
@@ -62,9 +64,10 @@ async def check_and_ban(bot: Bot, chat_id: int, user: User, mt_entity=None, mess
     raw_limit = int(settings.get("warning_limit", 3) or 0)
     limit = max(0, raw_limit)
     delete_after = bool(settings.get("delete_after_warning", True))
+    warning_auto_delete = max(0, int(settings.get("warning_auto_delete", 0) or 0)) if mode == "warning" else 0
 
     result = ProtectionResult(detected=True, action=mode, warning_limit=limit, bio=bio,
-                              reason="Prohibited link detected in bio")
+                              reason="Prohibited link detected in bio", warning_auto_delete=warning_auto_delete)
 
     # Direct punishment mode: no warning message is sent.
     if mode == "ban":
@@ -145,7 +148,17 @@ async def send_group_warning(bot: Bot, chat: Chat, user: User, result: Protectio
                 f"⚠️ Warning {result.warning_count}/{result.warning_limit}\n"
                 "🔗 Prohibited link detected in bio."
             )
-        await bot.send_message(chat.id, text, parse_mode="HTML", disable_web_page_preview=True)
+        sent = await bot.send_message(chat.id, text, parse_mode="HTML", disable_web_page_preview=True)
+        # Auto-delete only the warning notification. The offending user message
+        # is controlled separately by the "Delete after Warning" setting.
+        if result.warning_auto_delete > 0:
+            async def _delete_warning_later():
+                await asyncio.sleep(min(result.warning_auto_delete, 86400))
+                try:
+                    await bot.delete_message(chat.id, sent.message_id)
+                except TelegramError:
+                    pass
+            asyncio.create_task(_delete_warning_later())
     except TelegramError:
         pass
 

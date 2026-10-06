@@ -436,6 +436,15 @@ async def _settings_screen(query, bot, user_id, chat_id):
     join_label = "🟢 ON" if s["detect_on_join"] else "🔴 OFF"
     punishment = "🔨 Ban" if s["punishment"] == "ban" else "🔇 Mute"
     limit = "Off" if int(s["warning_limit"]) == 0 else str(s["warning_limit"])
+    auto_delete = int(s.get("warning_auto_delete", 0) or 0)
+    if auto_delete <= 0:
+        auto_delete_label = "Off"
+    elif auto_delete < 60:
+        auto_delete_label = f"{auto_delete}s"
+    elif auto_delete % 60 == 0:
+        auto_delete_label = f"{auto_delete // 60}m"
+    else:
+        auto_delete_label = f"{auto_delete}s"
 
     text = (
         f"⚙️ <b>{escape(group.get('title') or 'Group')}</b>\n\n"
@@ -445,6 +454,8 @@ async def _settings_screen(query, bot, user_id, chat_id):
     )
     if action == "warning":
         text += f"⚠️ <b>Warning Limit:</b> {limit}\n"
+        if int(s["warning_limit"]) > 0:
+            text += f"🗑️ <b>Warn Auto Delete:</b> {auto_delete_label}\n"
         text += f"🗑️ <b>Delete after Warning:</b> {delete_label}\n"
         text += f"⚖️ <b>Punishment:</b> {punishment}\n"
 
@@ -453,8 +464,11 @@ async def _settings_screen(query, bot, user_id, chat_id):
         [InlineKeyboardButton(f"💬 Message Action: {action_label}", callback_data=f"groupcfg:action:{chat_id}")],
     ]
     if action == "warning":
-        keyboard.append([InlineKeyboardButton(f"⚠️ Warning Limit: {limit}", callback_data=f"groupcfg:limit:{chat_id}")])
-        keyboard.append([InlineKeyboardButton(f"🗑️ Delete after Warning: {delete_label}", callback_data=f"groupcfg:delete:{chat_id}")])
+        # Warning limit and warning auto-delete are intentionally adjacent.
+        keyboard.append([InlineKeyboardButton(f"⚠️ Warning Limit: {limit}", callback_data=f"groupcfg:limit:{chat_id}"),
+                         InlineKeyboardButton(f"🗑️ Warn Auto Delete: {auto_delete_label}", callback_data=f"groupcfg:autodelete:{chat_id}")]) if int(s["warning_limit"]) > 0 else keyboard.append([InlineKeyboardButton(f"⚠️ Warning Limit: {limit}", callback_data=f"groupcfg:limit:{chat_id}")])
+        if int(s["warning_limit"]) > 0:
+            keyboard.append([InlineKeyboardButton(f"🗑️ Delete after Warning: {delete_label}", callback_data=f"groupcfg:delete:{chat_id}")])
         keyboard.append([InlineKeyboardButton(f"⚖️ Punishment: {punishment}", callback_data=f"groupcfg:punish:{chat_id}")])
     keyboard.append([InlineKeyboardButton("⬅️ My Groups", callback_data="groupcfg:list")])
     await query.edit_message_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
@@ -524,6 +538,38 @@ async def user_settings_callback(update: Update, context: ContextTypes.DEFAULT_T
             s = await db.get_protection_settings(chat_id)
             await db.update_protection_setting(chat_id, "delete_after_warning", not s["delete_after_warning"])
             await query.answer("Delete setting updated")
+            await _settings_screen(query, context.bot, user.id, chat_id)
+            return
+
+        if action == "autodelete":
+            s = await db.get_protection_settings(chat_id)
+            if int(s.get("warning_limit", 0)) <= 0:
+                await query.answer("Set a warning limit first.", show_alert=True)
+                await _settings_screen(query, context.bot, user.id, chat_id)
+                return
+            keyboard = [
+                [InlineKeyboardButton("5 sec", callback_data=f"groupcfg:setautodelete:{chat_id}:5"),
+                 InlineKeyboardButton("10 sec", callback_data=f"groupcfg:setautodelete:{chat_id}:10"),
+                 InlineKeyboardButton("30 sec", callback_data=f"groupcfg:setautodelete:{chat_id}:30")],
+                [InlineKeyboardButton("1 min", callback_data=f"groupcfg:setautodelete:{chat_id}:60"),
+                 InlineKeyboardButton("5 min", callback_data=f"groupcfg:setautodelete:{chat_id}:300"),
+                 InlineKeyboardButton("10 min", callback_data=f"groupcfg:setautodelete:{chat_id}:600")],
+                [InlineKeyboardButton("🚫 Off", callback_data=f"groupcfg:setautodelete:{chat_id}:0")],
+                [InlineKeyboardButton("⬅️ Back", callback_data=f"groupcfg:open:{chat_id}")],
+            ]
+            await query.answer()
+            await query.edit_message_text(
+                "🗑️ <b>Warn Auto Delete</b>\n\nChoose how long the warning message should stay in the group before it is automatically deleted.",
+                parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            return
+
+        if action == "setautodelete":
+            if len(parts) != 4:
+                return
+            value = max(0, int(parts[3]))
+            await db.update_protection_setting(chat_id, "warning_auto_delete", value)
+            await query.answer(f"Warn auto delete: {'Off' if value == 0 else str(value) + ' sec'}")
             await _settings_screen(query, context.bot, user.id, chat_id)
             return
 
