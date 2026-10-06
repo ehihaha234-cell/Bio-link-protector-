@@ -12,6 +12,114 @@ from mtproto_client import mt
 logger = logging.getLogger(__name__)
 
 
+async def _user_groups(update, context):
+    user = update.effective_user
+    if not user:
+        return []
+    groups = await db.active_groups()
+    result = []
+    for group in groups:
+        try:
+            member = await context.bot.get_chat_member(int(group["chat_id"]), int(user.id))
+            if member.status in ("administrator", "creator"):
+                result.append(group)
+        except Exception:
+            continue
+    return result
+
+async def user_dashboard(update, context):
+    if not update.effective_user or update.effective_user.id == OWNER_ID:
+        return
+    groups = await _user_groups(update, context)
+    keyboard = []
+    for group in groups[:20]:
+        title = (group.get("title") or str(group.get("chat_id")))[:35]
+        keyboard.append([InlineKeyboardButton(f"👥 {title}", callback_data=f"user:group:{group['chat_id']}")])
+    text = (
+        "🛡️ <b>Bio Link Protector</b>\n\n"
+        "Select your group below to configure bio-link protection settings."
+    )
+    if not groups:
+        text += "\n\n<i>No groups found where you are an administrator.</i>"
+    await update.effective_message.reply_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard) if keyboard else None)
+
+async def _verify_group_admin(query, context, chat_id):
+    try:
+        member = await context.bot.get_chat_member(int(chat_id), int(query.from_user.id))
+        return member.status in ("administrator", "creator")
+    except Exception:
+        return False
+
+def _group_settings_keyboard(chat_id, settings):
+    join = "🟢 ON" if settings.get("detect_on_join", True) else "🔴 OFF"
+    action = "🚫 Punish" if settings.get("message_action", "punish") == "punish" else "⚠️ Warning"
+    delete = "🟢 ON" if settings.get("delete_after_warning", True) else "🔴 OFF"
+    punishment = "🔨 Ban" if settings.get("punishment", "ban") == "ban" else "🔇 Mute"
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"🔎 Detect on Join: {join}", callback_data=f"user:set:{chat_id}:join")],
+        [InlineKeyboardButton(f"💬 Message Action: {action}", callback_data=f"user:set:{chat_id}:message")],
+        [InlineKeyboardButton(f"🗑️ Delete after Warning: {delete}", callback_data=f"user:set:{chat_id}:delete")],
+        [InlineKeyboardButton(f"⚖️ Punishment: {punishment}", callback_data=f"user:set:{chat_id}:punishment")],
+        [InlineKeyboardButton("⬅️ My Groups", callback_data="user:home")],
+    ])
+
+async def _show_group_settings(query, context, chat_id):
+    if not await _verify_group_admin(query, context, chat_id):
+        await query.answer("You must be a group administrator to change settings.", show_alert=True)
+        return
+    group = await db.get_group(int(chat_id))
+    if not group:
+        await query.answer("Group not found.", show_alert=True)
+        return
+    settings = await db.get_group_settings(int(chat_id))
+    title = escape(group.get("title") or str(chat_id))
+    text = (
+        f"⚙️ <b>{title}</b>\n\n"
+        "Configure when the bio is checked and what action is taken.\n\n"
+        f"🔎 Detect on Join: <b>{'ON' if settings.get('detect_on_join', True) else 'OFF'}</b>\n"
+        f"💬 Message Action: <b>{'Punish' if settings.get('message_action') == 'punish' else 'Warning'}</b>\n"
+        f"🗑️ Delete after Warning: <b>{'ON' if settings.get('delete_after_warning', True) else 'OFF'}</b>\n"
+        f"⚖️ Punishment: <b>{'Ban' if settings.get('punishment') == 'ban' else 'Mute'}</b>"
+    )
+    await query.edit_message_text(text, parse_mode="HTML", reply_markup=_group_settings_keyboard(chat_id, settings))
+    await query.answer()
+
+async def user_callback(update, context):
+    query = update.callback_query
+    if not query or query.from_user.id == OWNER_ID:
+        return
+    data = query.data or ""
+    if data == "user:home":
+        await query.answer()
+        groups = await _user_groups(update, context)
+        keyboard = [[InlineKeyboardButton(f"👥 {(g.get('title') or str(g.get('chat_id')))[:35]}", callback_data=f"user:group:{g['chat_id']}")] for g in groups[:20]]
+        text = "🛡️ <b>Bio Link Protector</b>\n\nSelect your group below to configure bio-link protection settings."
+        if not groups:
+            text += "\n\n<i>No groups found where you are an administrator.</i>"
+        await query.edit_message_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard) if keyboard else None)
+        return
+    if data.startswith("user:group:"):
+        chat_id = int(data.rsplit(":",1)[1])
+        await _show_group_settings(query, context, chat_id)
+        return
+    if data.startswith("user:set:"):
+        _, _, chat_id_raw, key = data.split(":")
+        chat_id = int(chat_id_raw)
+        if not await _verify_group_admin(query, context, chat_id):
+            await query.answer("You must be a group administrator.", show_alert=True)
+            return
+        settings = await db.get_group_settings(chat_id)
+        if key == "join":
+            await db.set_group_setting(chat_id, "detect_on_join", not settings.get("detect_on_join", True))
+        elif key == "message":
+            await db.set_group_setting(chat_id, "message_action", "warn" if settings.get("message_action", "punish") == "punish" else "punish")
+        elif key == "delete":
+            await db.set_group_setting(chat_id, "delete_after_warning", not settings.get("delete_after_warning", True))
+        elif key == "punishment":
+            await db.set_group_setting(chat_id, "punishment", "mute" if settings.get("punishment", "ban") == "ban" else "ban")
+        await _show_group_settings(query, context, chat_id)
+        return
+
 def owner_only(update):
     return bool(update.effective_user and update.effective_user.id == OWNER_ID)
 

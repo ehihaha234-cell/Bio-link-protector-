@@ -14,9 +14,9 @@ from telethon import events
 
 from config import BOT_TOKEN, OWNER_ID
 from database import db
-from protection import check_and_ban, is_admin, send_admin_warning
+from protection import check_and_ban, is_admin, send_admin_warning, send_user_warning
 from auto_delete import schedule_delete
-from owner import owner_start, owner_broadcast, owner_stats, owner_groups, mtproto_menu, mtlogin, mtlogout, mtlogin_message, owner_callback, owner_broadcast_message
+from owner import owner_start, owner_broadcast, owner_stats, owner_groups, mtproto_menu, mtlogin, mtlogout, mtlogin_message, owner_callback, owner_broadcast_message, user_callback, user_dashboard
 from mtproto_client import mt
 from setup_flow import setup_mtproto_for_group
 
@@ -42,12 +42,20 @@ async def mt_message_handler(event):
             member=await bot.get_chat_member(int(event.chat_id),sender.id)
             if member.status in ("administrator","creator"):return
             u=User(id=sender.id,first_name=getattr(sender,"first_name",None) or "User",last_name=getattr(sender,"last_name",None),username=getattr(sender,"username",None),is_bot=False)
-            result=await check_and_ban(bot,int(event.chat_id),u,sender)
-            if result.banned:
-                try:await bot.delete_message(int(event.chat_id),event.id)
-                except:pass
-                try:await send_admin_warning(bot,await bot.get_chat(int(event.chat_id)),u,result.reason,result.bio)
-                except:pass
+            result=await check_and_ban(bot,int(event.chat_id),u,sender,trigger="message")
+            if result.detected and result.action != "ignored":
+                if result.action == "warn":
+                    await send_user_warning(bot, int(event.chat_id), u, result.bio)
+                    if (await db.get_group_settings(int(event.chat_id))).get("delete_after_warning", True):
+                        try: await bot.delete_message(int(event.chat_id),event.id)
+                        except: pass
+                    try: await send_admin_warning(bot,await bot.get_chat(int(event.chat_id)),u,result.reason,result.bio,"Warning only")
+                    except: pass
+                elif result.action in ("User Banned", "User Muted"):
+                    try: await bot.delete_message(int(event.chat_id),event.id)
+                    except: pass
+                    try: await send_admin_warning(bot,await bot.get_chat(int(event.chat_id)),u,result.reason,result.bio,result.action)
+                    except: pass
     except Exception:logger.exception("MTProto message protection failed")
 
 async def mt_chat_action_handler(event):
@@ -65,8 +73,9 @@ async def mt_chat_action_handler(event):
             member=await bot.get_chat_member(int(event.chat_id),sender.id)
             if member.status in ("administrator","creator"):return
             u=User(id=sender.id,first_name=getattr(sender,"first_name",None) or "User",last_name=getattr(sender,"last_name",None),username=getattr(sender,"username",None),is_bot=False)
-            result=await check_and_ban(bot,int(event.chat_id),u,sender)
-            if result.banned: await send_admin_warning(bot,await bot.get_chat(int(event.chat_id)),u,result.reason,result.bio)
+            result=await check_and_ban(bot,int(event.chat_id),u,sender,trigger="join")
+            if result.detected and result.action in ("User Banned", "User Muted"):
+                await send_admin_warning(bot,await bot.get_chat(int(event.chat_id)),u,result.reason,result.bio,result.action)
     except Exception:logger.exception("MTProto join protection failed")
 
 def _run_mtproto():
@@ -94,6 +103,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Protection will start automatically once the required permissions are granted.",
         parse_mode="HTML",
     )
+    await user_dashboard(update, context)
 
 
 async def group_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -153,6 +163,7 @@ def main():
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(owner_callback, pattern=r"^owner:"))
+    app.add_handler(CallbackQueryHandler(user_callback, pattern=r"^user:"))
     app.add_handler(CommandHandler("broadcast", owner_broadcast))
     app.add_handler(CommandHandler("stats", owner_stats))
     app.add_handler(CommandHandler("groups", owner_groups))

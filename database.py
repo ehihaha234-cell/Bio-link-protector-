@@ -57,6 +57,30 @@ class Database:
             return []
         return await self._call(lambda: list(self.groups.find({"active": True}).limit(10000)))
 
+
+    async def get_group_settings(self, chat_id):
+        group = await self.get_group(chat_id)
+        defaults = {
+            "detect_on_join": True,
+            "message_action": "punish",  # punish | warn
+            "delete_after_warning": True,
+            "punishment": "ban",  # ban | mute
+        }
+        if not group:
+            return defaults
+        settings = group.get("protection_settings") or {}
+        return {**defaults, **settings}
+
+    async def set_group_setting(self, chat_id, key, value):
+        if self.groups is None:
+            return
+        await self._call(
+            self.groups.update_one,
+            {"chat_id": int(chat_id)},
+            {"$set": {f"protection_settings.{key}": value}},
+            upsert=True,
+        )
+
     async def set_delete_seconds(self, chat_id, seconds):
         if self.groups is None:
             return
