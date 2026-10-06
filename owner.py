@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from html import escape
 
@@ -156,12 +157,47 @@ async def owner_broadcast(update, context):
     if not owner_only(update):
         return
     context.user_data["broadcast_mode"] = True
+    context.user_data.pop("broadcast_items", None)
+    context.user_data.pop("broadcast_media_group_id", None)
+    context.user_data.pop("broadcast_collect_task", None)
     await update.effective_message.reply_text(
         "📢 <b>Broadcast</b>\n\n"
-        "Send the message or media you want to broadcast.\n"
-        "Supported: text, photo, video, document/file, audio and voice.\n"
-        "Caption will be included when media has a caption.\n\n"
+        "Send up to <b>10 media items</b> as one album, or send a text message.\n"
+        "Supported: photo, video, document/file, audio, voice, animation and text.\n"
+        "Captions are preserved. The same broadcast will be sent to <b>all active groups</b> and <b>all users who started the bot</b>.\n\n"
+        "After sending the media/message, you will get a <b>Confirm / Cancel</b> button.\n\n"
         "Send <code>/cancel</code> to cancel.", parse_mode="HTML"
+    )
+
+
+async def _finish_broadcast_collection(update, context):
+    """Finalize a media album after Telegram has delivered its messages."""
+    await asyncio.sleep(1.2)
+    if not context.user_data.get("broadcast_mode"):
+        return
+    items = context.user_data.get("broadcast_items") or []
+    if not items:
+        return
+
+    # Keep first 10 messages only. Telegram media groups are max 10.
+    items = items[:10]
+    context.user_data["broadcast_items"] = items
+    context.user_data["broadcast_chat_id"] = update.effective_chat.id
+    context.user_data["broadcast_mode"] = False
+    context.user_data.pop("broadcast_collect_task", None)
+
+    kind = "media album" if len(items) > 1 else "media/message"
+    await update.effective_message.reply_text(
+        "📢 <b>Broadcast Preview Ready</b>\n\n"
+        f"📦 <b>{len(items)}</b> item(s) in this {kind}.\n"
+        "📍 <b>Recipients:</b> all active groups + all users who started the bot.\n"
+        "📝 Captions will be preserved.\n\n"
+        "Do you want to send this broadcast?",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Confirm Broadcast", callback_data="owner:broadcast_confirm")],
+            [InlineKeyboardButton("❌ Cancel", callback_data="owner:broadcast_cancel")],
+        ])
     )
 
 
@@ -171,24 +207,54 @@ async def owner_broadcast_message(update, context):
     msg = update.effective_message
     if not msg:
         return False
+
     if msg.text and msg.text.strip() == "/cancel":
+        task = context.user_data.pop("broadcast_collect_task", None)
+        if task:
+            task.cancel()
         context.user_data.pop("broadcast_mode", None)
+        context.user_data.pop("broadcast_items", None)
+        context.user_data.pop("broadcast_media_group_id", None)
         await msg.reply_text("❌ Broadcast cancelled.")
         await owner_start(update, context)
         return True
 
-    if not (msg.text or msg.photo or msg.video or msg.document or msg.audio or msg.voice or msg.animation):
-        await msg.reply_text("⚠️ Please send text, photo, video, file, audio or voice message.")
+    supported = bool(msg.text or msg.photo or msg.video or msg.document or msg.audio or msg.voice or msg.animation)
+    if not supported:
+        await msg.reply_text("⚠️ Please send text or supported media. You can send up to 10 media items as one album.")
         return True
 
-    context.user_data["broadcast_message_id"] = msg.message_id
+    # A Telegram media album arrives as several updates with the same media_group_id.
+    media_group_id = getattr(msg, "media_group_id", None)
+    if media_group_id:
+        current_group = context.user_data.get("broadcast_media_group_id")
+        if current_group and current_group != media_group_id:
+            await msg.reply_text("⚠️ Please finish the current broadcast album first, or cancel it.")
+            return True
+        context.user_data["broadcast_media_group_id"] = media_group_id
+        items = context.user_data.setdefault("broadcast_items", [])
+        if msg.message_id not in items:
+            if len(items) < 10:
+                items.append(msg.message_id)
+            else:
+                return True
+
+        old_task = context.user_data.get("broadcast_collect_task")
+        if old_task:
+            old_task.cancel()
+        task = asyncio.create_task(_finish_broadcast_collection(update, context))
+        context.user_data["broadcast_collect_task"] = task
+        return True
+
+    # Plain text or a single media item: finalize shortly after the message arrives.
+    context.user_data["broadcast_items"] = [msg.message_id]
     context.user_data["broadcast_chat_id"] = msg.chat_id
     context.user_data["broadcast_mode"] = False
-
     await msg.reply_text(
         "📢 <b>Broadcast Preview Ready</b>\n\n"
-        "The message/media above will be sent to all active groups.\n\n"
-        "Are you sure you want to broadcast it?",
+        "📍 <b>Recipients:</b> all active groups + all users who started the bot.\n"
+        "📝 Caption will be preserved when present.\n\n"
+        "Do you want to send this broadcast?",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("✅ Confirm Broadcast", callback_data="owner:broadcast_confirm")],
@@ -198,39 +264,86 @@ async def owner_broadcast_message(update, context):
     return True
 
 
+async def _copy_to_target(context, source_chat_id, message_ids, target_chat_id):
+    """Copy one text/media message or an album to one target."""
+    if len(message_ids) == 1:
+        await context.bot.copy_message(
+            chat_id=target_chat_id,
+            from_chat_id=source_chat_id,
+            message_id=message_ids[0],
+        )
+    else:
+        # Bot API copyMessages preserves the original media/captions and copies
+        # the complete album in one operation. Max 10 is enforced above.
+        await context.bot.copy_messages(
+            chat_id=target_chat_id,
+            from_chat_id=source_chat_id,
+            message_ids=message_ids,
+        )
+
+
 async def _do_broadcast(update, context):
-    message_id = context.user_data.get("broadcast_message_id")
-    source_chat_id = context.user_data.get("broadcast_chat_id")
-    if not message_id or not source_chat_id:
-        await update.callback_query.answer("Broadcast data expired. Please start again.", show_alert=True)
+    query = update.callback_query
+    message_ids = list(context.user_data.get("broadcast_items") or [])
+    source_chat_id = context.user_data.get("broadcast_chat_id") or query.message.chat_id
+    if not message_ids or not source_chat_id:
+        await query.answer("Broadcast data expired. Please start again.", show_alert=True)
         return
 
     groups = await db.active_groups()
-    sent = failed = 0
-    for group in groups:
-        try:
-            await context.bot.copy_message(
-                chat_id=group["chat_id"],
-                from_chat_id=source_chat_id,
-                message_id=message_id,
-            )
-            sent += 1
-        except Exception:
-            failed += 1
-            try:
-                await db.deactivate_group(group["chat_id"])
-            except Exception:
-                pass
+    users = await db.active_users()
+    targets = [int(g["chat_id"]) for g in groups]
+    targets += [int(u["_id"]) for u in users]
+    # Deduplicate while preserving order.
+    targets = list(dict.fromkeys(targets))
 
-    context.user_data.pop("broadcast_message_id", None)
-    context.user_data.pop("broadcast_chat_id", None)
-    await update.callback_query.answer("Broadcast completed")
-    await update.callback_query.message.reply_text(
-        f"📢 <b>Broadcast completed</b>\n\n✅ Sent: {sent}\n❌ Failed: {failed}",
+    sent = failed = 0
+    failed_groups = 0
+    failed_users = 0
+
+    sem = asyncio.Semaphore(15)
+
+    async def send_one(target):
+        nonlocal sent, failed, failed_groups, failed_users
+        async with sem:
+            try:
+                await _copy_to_target(context, source_chat_id, message_ids, target)
+                sent += 1
+            except Exception as exc:
+                failed += 1
+                if target < 0:
+                    failed_groups += 1
+                    try:
+                        await db.deactivate_group(target)
+                    except Exception:
+                        pass
+                else:
+                    failed_users += 1
+                    # A blocked/deleted user should not be retried forever.
+                    try:
+                        await db.deactivate_user(target)
+                    except Exception:
+                        pass
+                logger.warning("Broadcast failed target=%s: %s", target, exc)
+
+    await asyncio.gather(*(send_one(target) for target in targets))
+
+    for key in ("broadcast_items", "broadcast_chat_id", "broadcast_mode", "broadcast_media_group_id", "broadcast_collect_task"):
+        context.user_data.pop(key, None)
+
+    await query.answer("Broadcast completed")
+    await query.message.reply_text(
+        "📢 <b>Broadcast completed</b>\n\n"
+        f"📦 Items: <b>{len(message_ids)}</b>\n"
+        f"👥 Groups: <b>{len(groups)}</b>\n"
+        f"👤 Users: <b>{len(users)}</b>\n"
+        f"✅ Delivered: <b>{sent}</b>\n"
+        f"❌ Failed: <b>{failed}</b>\n"
+        f"   • Groups failed: {failed_groups}\n"
+        f"   • Users failed: {failed_users}",
         parse_mode="HTML",
     )
-    await _show_dashboard(update.callback_query, context)
-
+    await _show_dashboard(query, context)
 
 async def owner_stats(update, context):
     if not owner_only(update):
@@ -334,8 +447,11 @@ async def owner_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "owner:broadcast":
         await query.answer()
         context.user_data["broadcast_mode"] = True
+        context.user_data.pop("broadcast_items", None)
+        context.user_data.pop("broadcast_media_group_id", None)
         await query.message.reply_text(
-            "📢 <b>Broadcast</b>\n\nSend text or media (photo/video/file/audio/voice).\n"
+            "📢 <b>Broadcast</b>\n\nSend text or up to <b>10 media items</b> as one album.\n"
+            "Supported: photo, video, document/file, audio, voice and animation.\n"
             "Caption is preserved.\n\n/cancel to cancel.", parse_mode="HTML"
         )
         return
@@ -345,9 +461,13 @@ async def owner_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "owner:broadcast_cancel":
-        context.user_data.pop("broadcast_message_id", None)
+        task = context.user_data.pop("broadcast_collect_task", None)
+        if task:
+            task.cancel()
+        context.user_data.pop("broadcast_items", None)
         context.user_data.pop("broadcast_chat_id", None)
         context.user_data.pop("broadcast_mode", None)
+        context.user_data.pop("broadcast_media_group_id", None)
         await query.answer("Broadcast cancelled")
         await _show_dashboard(query, context)
         return

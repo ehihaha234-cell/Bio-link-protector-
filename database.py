@@ -146,9 +146,22 @@ class Database:
         await self._call(
             self.users.update_one,
             {"_id": int(user_id)},
-            {"$set": {"last_started_at": datetime.now(timezone.utc)}},
+            {"$set": {
+                "last_started_at": datetime.now(timezone.utc),
+                "active": True,
+            }, "$setOnInsert": {"created_at": datetime.now(timezone.utc)}},
             upsert=True,
         )
+
+    async def active_users(self):
+        if self.users is None:
+            return []
+        return await self._call(lambda: list(self.users.find({"active": {"$ne": False}}, {"_id": 1}).limit(100000)))
+
+    async def deactivate_user(self, user_id):
+        if self.users is None:
+            return
+        await self._call(self.users.update_one, {"_id": int(user_id)}, {"$set": {"active": False}})
 
     async def record_user_banned(self, user_id, chat_id=None):
         if self.settings is None:
