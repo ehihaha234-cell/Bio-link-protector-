@@ -48,7 +48,7 @@ async def mt_message_handler(event):
             u = User(id=sender.id, first_name=getattr(sender, "first_name", None) or "User",
                      last_name=getattr(sender, "last_name", None), username=getattr(sender, "username", None), is_bot=False)
             result = await check_and_ban(bot, chat_id, u, sender, message_id=event.id, bio=bio)
-            if result.detected and result.action in ("warning", "mute"):
+            if result.detected and result.warning_count > 0:
                 from protection import send_group_warning
                 await send_group_warning(bot, await bot.get_chat(chat_id), u, result)
     except Exception:
@@ -78,7 +78,7 @@ async def mt_chat_action_handler(event):
             u = User(id=sender.id, first_name=getattr(sender, "first_name", None) or "User",
                      last_name=getattr(sender, "last_name", None), username=getattr(sender, "username", None), is_bot=False)
             result = await check_and_ban(bot, chat_id, u, sender, bio=bio)
-            if result.detected and result.action in ("warning", "mute"):
+            if result.detected and result.warning_count > 0:
                 from protection import send_group_warning
                 await send_group_warning(bot, await bot.get_chat(chat_id), u, result)
     except Exception:

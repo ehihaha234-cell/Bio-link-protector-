@@ -129,7 +129,7 @@ async def check_and_ban(bot: Bot, chat_id: int, user: User, mt_entity=None, mess
 
 
 async def send_group_warning(bot: Bot, chat: Chat, user: User, result: ProtectionResult):
-    if not result.detected or result.action not in ("warning", "mute"):
+    if not result.detected or result.warning_count <= 0:
         return
     try:
         if result.punished:
